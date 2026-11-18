@@ -5,7 +5,7 @@ Addons for World of Warcraft: Forever.
 | Addon | What it does | Open with | License |
 |---|---|---|---|
 | [ZQuest](ZQuest) | Step-by-step leveling guides from 1 to 60 with an arrow, map pins and dungeon walkthroughs. A fork of OpenXP, which is based on RestedXP Guides. | `/zq` | CC BY-NC-SA 4.0 |
-| [ZDungeon](ZDungeon) | Dungeon planner: quests and the XP they pay, travel time, gear upgrades, and warnings about quests and items you are missing. | `/zd` | GPL v3 |
+| [ZDungeon](ZDungeon) | Dungeon planner: where to go next, a step-by-step guide card, quests and the XP they pay, travel time, gear upgrades, and warnings about quests and items you are missing. | `/zd` | GPL v3 |
 
 Status: early releases. In-game testing is in progress.
 

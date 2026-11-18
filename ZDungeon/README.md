@@ -8,6 +8,19 @@ Status: early release. Built and tested outside the game; in-game testing is in 
 
 ## What it does
 
+### Where do I go next?
+- One button that gives you up to three dungeon options for your level, best quest XP per hour first.
+- Each option shows the quest XP ready, how far away it is, and how many gear upgrades are waiting.
+- Pick one and click **Start guide**.
+
+### The guide card
+- A small window, like ZQuest's, that walks you through one dungeon step by step.
+- Chain quests first, then the pick-ups (nearest first), the trip to the entrance, what to get inside, and the hand-ins.
+- Steps tick themselves off from your quest log. A button shows the current step on the map.
+
+### Level-up cheers
+- When a new level opens a dungeon or new dungeon quests, ZDungeon congratulates you and says what just opened.
+
 ### Quests and XP
 - Every quest for each dungeon, for your faction and class, with its level and the XP it pays at your level.
 - Status for each quest: done, in your log, available, behind a chain, or needs a higher level.
@@ -41,6 +54,8 @@ The gear list needs DungeonJournal. Upgrade numbers need Forever Leveling BiS.
 | Command | What it does |
 |---|---|
 | `/zd` | Open or close the window |
+| `/zd next` | Where do I go next? |
+| `/zd guide` | Show or hide the guide card (starts one for the dungeon you are looking at) |
 | `/zd check` | Print the missing-quest checklist for the current dungeon |
 | `/zd tracker` | Turn the in-dungeon tracker off or on |
 

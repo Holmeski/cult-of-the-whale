@@ -28,6 +28,10 @@ local state = {dungeon = nil, sortKey = "xp", sortDesc = true, offset = 0, selec
                mode = "quests", gearSort = "gain", gearDesc = true, gearSelected = nil,
                upgradesOnly = false, showUnusable = false}
 
+-- set further down; declared here so the window and the tracker can call them
+local StartPlan, OpenNext, UpdateCard, card
+local plan -- the dungeon guide in progress: {key, ids, chain, order, arrived}
+
 local function Secret(v)
     return issecretvalue and issecretvalue(v) or false
 end
@@ -582,6 +586,10 @@ local function UpdateTracker()
         if tracker then tracker:Hide() end
         return
     end
+    if card and card:IsShown() and plan and plan.key == d.key then
+        if tracker then tracker:Hide() end
+        return
+    end
     if not tracker then tracker = CreateTracker() end
     if tracker.closedFor == d then return end
     tracker.closedFor = nil
@@ -1124,6 +1132,11 @@ local function CreateWindow()
     end
     f.gearMode = ModeButton("Gear", -40, "gear")
     f.questMode = ModeButton("Quests", -118, "quests")
+    local nextButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    nextButton:SetSize(150, 22)
+    nextButton:SetPoint("TOPRIGHT", -200, -9)
+    nextButton:SetText("Where do I go next?")
+    nextButton:SetScript("OnClick", function() OpenNext() end)
 
     -- Dungeon list -----------------------------------------------------
     f.dungeonButtons = {}
@@ -1182,7 +1195,7 @@ local function CreateWindow()
         return t
     end
     f.summary = Wrapped(-30, 26)
-    f.travel = Wrapped(-58, 39, 516)
+    f.travel = Wrapped(-58, 39, 424)
     f.rate = Wrapped(-98, 13)
 
     f.entranceButton = CreateFrame("Button", nil, right, "UIPanelButtonTemplate")
@@ -1191,6 +1204,14 @@ local function CreateWindow()
     f.entranceButton:SetText("Entrance")
     f.entranceButton:SetScript("OnClick", function()
         if state.dungeon then ShowOnMap(state.dungeon.entrance) end
+    end)
+
+    f.planButton = CreateFrame("Button", nil, right, "UIPanelButtonTemplate")
+    f.planButton:SetSize(88, 20)
+    f.planButton:SetPoint("TOPRIGHT", -82, -60)
+    f.planButton:SetText("Start guide")
+    f.planButton:SetScript("OnClick", function()
+        if state.dungeon then StartPlan(state.dungeon) end
     end)
 
     local function Check(label, x, key)
@@ -1676,12 +1697,537 @@ SlashCmdList["ZDUNGEON"] = function(input)
         if tracker then tracker.closedFor = nil end
         Say("the in-dungeon tracker is " .. (ZDungeonDB.noTracker and "off." or "on."))
         UpdateTracker()
+    elseif input == "next" then
+        OpenNext()
+    elseif input == "guide" or input == "plan" then
+        if plan and ZDungeonDB.cardHidden then
+            ZDungeonDB.cardHidden = nil
+            UpdateCard()
+        elseif plan and card and card:IsShown() then
+            card:Hide()
+            ZDungeonDB.cardHidden = true
+            UpdateTracker()
+        else
+            local d = run.dungeon or preview or state.dungeon
+            if d then StartPlan(d) else OpenNext() end
+        end
     elseif input == "check" then
         local d = run.dungeon or preview or state.dungeon
         if d then Checklist(d, "manual") else Say("open /zd and pick a dungeon first.") end
     else
         Toggle()
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- The guide card: one dungeon, step by step
+--
+-- A small window like ZQuest's guide card. It lists what to do for one
+-- dungeon in order: chain quests first, pick-ups (nearest first), the trip
+-- to the entrance, what to get inside, and the hand-ins. Steps tick
+-- themselves off from your quest log.
+-- ---------------------------------------------------------------------------
+
+local function CharKey()
+    return (UnitName and UnitName("player") or "?") .. "-" .. (GetRealmName and GetRealmName() or "?")
+end
+
+local function DungeonByKey(key)
+    for _, d in ipairs(ns.dungeons) do if d.key == key then return d end end
+end
+
+local function PlaceKey(p)
+    return (p and p.n or "?") .. "|" .. (p and p.m or 0)
+end
+
+local function PlaceText(p)
+    if not p then return "?" end
+    if p.inside then return p.n .. " (inside)" end
+    if p.m then return ("%s, %s (%.0f, %.0f)"):format(p.n, ZoneName(p.m) or "?", p.x or 0, p.y or 0) end
+    return p.n
+end
+
+local function TravelSecs(p)
+    local api = _G.RXPGuides
+    if not (p and p.m and api and api.TravelEstimate) then return nil end
+    local ok, t = pcall(api.TravelEstimate, p.m, p.x, p.y, p.n)
+    return ok and type(t) == "table" and t.secs or nil
+end
+
+-- The steps for the current plan, with live done flags.
+local function PlanSteps()
+    local d = plan and DungeonByKey(plan.key)
+    if not d then return nil end
+    local steps = {}
+    local function add(step) tinsert(steps, step) end
+
+    for _, id in ipairs(plan.chain) do
+        local q = ns.quests[id]
+        if q then
+            add({kind = "chain", text = "Chain quest: " .. q.name,
+                 sub = (InLog(id) and "In your log. " or "Get it from ") .. (InLog(id) and "Finish it and hand it in." or PlaceText(q.start)),
+                 place = q.start, done = IsDone(id)})
+        end
+    end
+
+    -- pick-ups outside, one step per quest giver, in the order worked out when the plan started
+    local groups, order = {}, {}
+    for _, id in ipairs(plan.ids) do
+        local q = ns.quests[id]
+        local p = q and q.start
+        if p and not p.inside and p.k ~= "item" then
+            local k = PlaceKey(p)
+            if not groups[k] then groups[k] = {place = p, ids = {}} tinsert(order, k) end
+            tinsert(groups[k].ids, id)
+        end
+    end
+    sort(order, function(a, b)
+        local x, y = plan.order[a] or 1e9, plan.order[b] or 1e9
+        if x == y then return a < b end
+        return x < y
+    end)
+    for _, k in ipairs(order) do
+        local g = groups[k]
+        local names, done = {}, true
+        for _, id in ipairs(g.ids) do
+            tinsert(names, ns.quests[id].name)
+            if not (IsDone(id) or InLog(id)) then done = false end
+        end
+        add({kind = "pickup", text = "Pick up from " .. g.place.n, sub = concat(names, ", ") .. "  -  " .. (ZoneName(g.place.m) or "?")
+             .. (" (%.0f, %.0f)"):format(g.place.x or 0, g.place.y or 0), place = g.place, done = done})
+    end
+
+    local arrived = plan.arrived or run.dungeon == d
+    local travel = "Go to " .. d.name
+    local tsub = d.entrance and (("Entrance: %s (%.0f, %.0f)"):format(ZoneName(d.entrance.m) or "?", d.entrance.x, d.entrance.y)) or ""
+    if not arrived then
+        local t = Travel(d)
+        if t then
+            tsub = tsub .. ".  About " .. Minutes(t.secs)
+            if t.legs and t.legs[1] then tsub = tsub .. ": " .. t.legs[1].text end
+        end
+    end
+    add({kind = "travel", text = travel, sub = tsub, place = d.entrance, done = arrived and true or false})
+
+    for _, id in ipairs(plan.ids) do
+        local q = ns.quests[id]
+        local p = q and q.start
+        if p and (p.inside or p.k == "item") then
+            add({kind = "inside", text = "Inside: get " .. q.name,
+                 sub = p.k == "item" and ("Drops from " .. (p.from or "?")) or ("From " .. p.n), done = IsDone(id) or InLog(id)})
+        end
+    end
+
+    for _, id in ipairs(plan.ids) do
+        local q = ns.quests[id]
+        if q then
+            local done, sub = IsDone(id), nil
+            if not done then
+                if InLog(id) then
+                    local left = {}
+                    for _, o in ipairs(Objectives(id)) do if not o.done then tinsert(left, o.text) end end
+                    if #left == 0 then done = true else sub = concat(left, ", ") end
+                else
+                    sub = "Not picked up yet."
+                end
+            end
+            add({kind = "do", text = "Finish: " .. q.name, sub = sub, done = done})
+        end
+    end
+
+    local tgroups, torder = {}, {}
+    for _, id in ipairs(plan.ids) do
+        local q = ns.quests[id]
+        local p = q and (q.finish or q.start)
+        if p then
+            local k = PlaceKey(p)
+            if not tgroups[k] then tgroups[k] = {place = p, ids = {}} tinsert(torder, k) end
+            tinsert(tgroups[k].ids, id)
+        end
+    end
+    for _, k in ipairs(torder) do
+        local g = tgroups[k]
+        local names, done = {}, true
+        for _, id in ipairs(g.ids) do
+            tinsert(names, ns.quests[id].name)
+            if not IsDone(id) then done = false end
+        end
+        add({kind = "turnin", text = "Hand in to " .. g.place.n, sub = concat(names, ", ") .. "  -  " .. PlaceText(g.place),
+             place = g.place.m and g.place or nil, done = done})
+    end
+    return steps, d
+end
+
+local function CreateCard()
+    local f = CreateFrame("Frame", "ZDungeonCard", UIParent, Backdrop)
+    f:SetSize(320, 160)
+    f:SetPoint("LEFT", UIParent, "LEFT", 40, 60)
+    f:SetFrameStrata("MEDIUM")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:SetClampedToScreen(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        if ZDungeonDB and self.GetPoint then
+            local point, _, rel, x, y = self:GetPoint(1)
+            if point then ZDungeonDB.cardPos = {point, rel, x, y} end
+        end
+    end)
+    SetBackdrop(f, 0.85)
+    local pos = ZDungeonDB and ZDungeonDB.cardPos
+    if pos and pos[1] then
+        f:ClearAllPoints()
+        f:SetPoint(pos[1], UIParent, pos[2] or pos[1], pos[3] or 0, pos[4] or 0)
+    end
+    f.title = Text(f, "GameFontNormal")
+    f.title:SetPoint("TOPLEFT", 10, -8)
+    f.title:SetWidth(270)
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", 3, 3)
+    close:SetScript("OnClick", function()
+        f:Hide()
+        if ZDungeonDB then ZDungeonDB.cardHidden = true end
+        UpdateTracker()
+    end)
+    f.body = Text(f, "GameFontHighlightSmall")
+    f.body:SetPoint("TOPLEFT", 10, -30)
+    f.body:SetWidth(300)
+    f.body:SetJustifyV("TOP")
+    if f.body.SetWordWrap then f.body:SetWordWrap(true) end
+    if f.body.SetSpacing then f.body:SetSpacing(3) end
+    local function Button(label, w, x, fn)
+        local b = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        b:SetSize(w, 20)
+        b:SetPoint("BOTTOMLEFT", x, 8)
+        b:SetText(label)
+        b:SetScript("OnClick", fn)
+        return b
+    end
+    f.mapButton = Button("Show on map", 96, 8, function(self) ShowOnMap(self.place) end)
+    f.nextButton = Button("Where next?", 96, 108, function() OpenNext() end)
+    f.openButton = Button("Details", 70, 208, function()
+        local d = plan and DungeonByKey(plan.key)
+        if d then
+            if not frame then frame = CreateWindow() end
+            state.dungeon, state.offset, state.selected = d, 0, nil
+            frame:Show()
+            Refresh()
+        end
+    end)
+    f:Hide()
+    return f
+end
+
+UpdateCard = function()
+    if not plan or (ZDungeonDB and ZDungeonDB.cardHidden) then
+        if card then card:Hide() end
+        return
+    end
+    local steps, d = PlanSteps()
+    if not steps then
+        if card then card:Hide() end
+        return
+    end
+    if run.dungeon == d and not plan.arrived then
+        plan.arrived = true
+        steps = PlanSteps()
+    end
+    if not card then card = CreateCard() end
+    local doneCount, current = 0, nil
+    for i, st in ipairs(steps) do
+        if st.done then doneCount = doneCount + 1 elseif not current then current = i end
+    end
+    card.title:SetText(("%s  |cff888888%d of %d|r"):format(d.name, doneCount, #steps))
+    local L = {}
+    if not current then
+        tinsert(L, "|cff40ff40Everything on this list is done.|r")
+        tinsert(L, "Click |cffffd100Where next?|r for your next options.")
+    else
+        if current > 1 then
+            tinsert(L, ("|cff808080[x] %d step%s done|r"):format(current - 1, current == 2 and "" or "s"))
+        end
+        local st = steps[current]
+        tinsert(L, "|cffffd100> " .. st.text .. "|r")
+        if st.sub and st.sub ~= "" then tinsert(L, "   |cffffffff" .. st.sub .. "|r") end
+        local shown = 0
+        for i = current + 1, #steps do
+            if shown < 5 then
+                local n = steps[i]
+                tinsert(L, (n.done and "|cff808080[x] " or "|cffbbbbbb[ ] ") .. n.text .. "|r")
+                shown = shown + 1
+            end
+        end
+        local more = #steps - current - shown
+        if more > 0 then tinsert(L, ("|cff808080... and %d more|r"):format(more)) end
+    end
+    card.body:SetText(concat(L, "\n"))
+    local place = current and steps[current].place or nil
+    card.mapButton.place = place
+    card.mapButton:SetShown(place and place.m and true or false)
+    local h = card.body.GetStringHeight and card.body:GetStringHeight()
+    card:SetHeight((type(h) == "number" and h or 110) + 70)
+    card:Show()
+    if plan.wasDone == false and not current then
+        Say(("%s: everything on your guide is done. Click Where next? for your options."):format(d.name))
+    end
+    plan.wasDone = not current
+    if tracker and tracker:IsShown() then UpdateTracker() end
+end
+
+StartPlan = function(d)
+    logCache = nil
+    local ids, chain, seen, order = {}, {}, {}, {}
+    for _, id in ipairs(d.quests) do
+        local q = ns.quests[id]
+        if q and ForMySide(q) and ForMyClass(q) then
+            local st = Status(id)
+            if st == "ready" or st == "log" or st == "chain" then
+                tinsert(ids, id)
+                for _, p in ipairs(Chain(id)) do
+                    if not seen[p] then seen[p] = true tinsert(chain, p) end
+                end
+            end
+        end
+    end
+    -- quests that are both a chain step and a dungeon quest stay in the quest list only
+    local isQuest = {}
+    for _, id in ipairs(ids) do isQuest[id] = true end
+    local onlyChain = {}
+    for _, id in ipairs(chain) do if not isQuest[id] then tinsert(onlyChain, id) end end
+    -- nearest quest giver first, by travel time from where you are now
+    -- ...but a quest that needs another quest on this list comes after it
+    local secs, depth = {}, {}
+    for _, id in ipairs(ids) do
+        local p = ns.quests[id].start
+        if p then
+            local k = PlaceKey(p)
+            if secs[k] == nil then secs[k] = (p.m and TravelSecs(p)) or 36000 end
+            local n = 0
+            for _, c in ipairs(Chain(id)) do if isQuest[c] then n = n + 1 end end
+            depth[k] = min(depth[k] or 99, n)
+        end
+    end
+    for k, v in pairs(secs) do order[k] = (depth[k] or 0) * 100000 + v end
+    plan = {key = d.key, ids = ids, chain = onlyChain, order = order, arrived = run.dungeon == d, wasDone = false}
+    if ZDungeonDB then
+        ZDungeonDB.plans = ZDungeonDB.plans or {}
+        ZDungeonDB.plans[CharKey()] = plan
+        ZDungeonDB.cardHidden = nil
+    end
+    if #ids == 0 then
+        Say(d.name .. ": no quests you can do there right now, so the guide only has the trip.")
+    end
+    UpdateCard()
+    UpdateTracker()
+end
+
+-- ---------------------------------------------------------------------------
+-- Where do I go next?
+-- ---------------------------------------------------------------------------
+
+local nextFrame
+
+local function NextOptions()
+    logCache = nil
+    local lvl = UnitLevel("player") or 1
+    local side = PlayerSide()
+    local list, upcoming = {}, nil
+    for _, d in ipairs(ns.dungeons) do
+        if not d.side or d.side == side then
+            if lvl >= d.lo and lvl <= d.hi + 2 then
+                local now, all, extra, count, left = DungeonTotals(d)
+                local n = Needs(d)
+                local rate, mins = nil, nil
+                if now > 0 then rate, mins = PerHour(d, now) end
+                local t = Travel(d)
+                if left > 0 then tinsert(list, {d = d, now = now, all = all, left = left, count = count, rate = rate,
+                               secs = t and t.secs, ready = #n.outside + #n.inside, inlog = #n.needed + #n.turnin,
+                               locked = #n.locked, score = (rate or now) + left * 0.001}) end
+            elseif lvl < d.lo and (not upcoming or d.lo < upcoming.lo) then
+                upcoming = d
+            end
+        end
+    end
+    sort(list, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return a.d.lo < b.d.lo
+    end)
+    local top = {}
+    for i = 1, min(3, #list) do
+        local o = list[i]
+        -- gear only for the ones shown: it makes the game load every item
+        local rows = GearRows(o.d)
+        if rows then
+            o.upgrades = 0
+            for _, row in ipairs(rows) do
+                if row.usable and row.gain and row.gain > 0 then
+                    o.upgrades = o.upgrades + 1
+                    if not o.bestGear or row.gain > o.bestGear.gain then o.bestGear = row end
+                end
+            end
+        end
+        tinsert(top, o)
+    end
+    return top, upcoming
+end
+
+local function OptionText(i, o)
+    local d = o.d
+    local L = {}
+    tinsert(L, ("|cffffd100%d. %s|r  |cff888888levels %d-%d|r"):format(i, d.name, d.lo, d.hi))
+    local q
+    if o.count == 0 then
+        q = "No quest data yet."
+    elseif o.left == 0 then
+        q = "All quests done."
+    else
+        q = ("|cff40ff40%s quest XP|r ready"):format(Comma(o.now))
+        local bits = {}
+        if o.inlog > 0 then tinsert(bits, o.inlog .. " in your log") end
+        if o.ready > 0 then tinsert(bits, o.ready .. " to pick up") end
+        if o.locked > 0 then tinsert(bits, o.locked .. " behind a chain or level") end
+        if #bits > 0 then q = q .. " (" .. concat(bits, ", ") .. ")" end
+        q = q .. "."
+    end
+    tinsert(L, q)
+    local trip = {}
+    if o.secs then tinsert(trip, "About " .. Minutes(o.secs) .. " away") end
+    if o.rate then tinsert(trip, ("about %s quest XP per hour"):format(Comma(o.rate))) end
+    if #trip > 0 then tinsert(L, concat(trip, ", ") .. ".") end
+    if o.upgrades then
+        if o.upgrades > 0 then
+            tinsert(L, ("|cff40ff40%d gear upgrade%s|r, best: %s%s|r (+%.1f)."):format(o.upgrades, o.upgrades == 1 and "" or "s",
+                QualityColor(o.bestGear.quality), o.bestGear.name, o.bestGear.gain))
+        else
+            tinsert(L, "|cff808080No gear upgrades for you there right now.|r")
+        end
+    end
+    return concat(L, "\n")
+end
+
+local function CreateNext()
+    local f = CreateFrame("Frame", "ZDungeonNext", UIParent, Backdrop)
+    f:SetSize(560, 200)
+    f:SetPoint("CENTER", 0, 80)
+    f:SetFrameStrata("DIALOG")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:SetClampedToScreen(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    SetBackdrop(f)
+    if UISpecialFrames then tinsert(UISpecialFrames, "ZDungeonNext") end
+    local title = Text(f, "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText("Where do I go next?")
+    f.note = Text(f, "GameFontDisableSmall")
+    f.note:SetPoint("TOPLEFT", 14, -36)
+    f.note:SetWidth(520)
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", 2, 2)
+    f.options = {}
+    for i = 1, 3 do
+        local o = CreateFrame("Frame", nil, f, Backdrop)
+        o:SetSize(536, 92)
+        o:SetPoint("TOPLEFT", 12, -58 - (i - 1) * 98)
+        SetBackdrop(o, 0.6)
+        o.text = Text(o, "GameFontHighlightSmall")
+        o.text:SetPoint("TOPLEFT", 10, -8)
+        o.text:SetWidth(400)
+        o.text:SetHeight(78)
+        o.text:SetJustifyV("TOP")
+        if o.text.SetWordWrap then o.text:SetWordWrap(true) end
+        if o.text.SetSpacing then o.text:SetSpacing(2) end
+        o.go = CreateFrame("Button", nil, o, "UIPanelButtonTemplate")
+        o.go:SetSize(104, 22)
+        o.go:SetPoint("TOPRIGHT", -10, -14)
+        o.go:SetText("Start guide")
+        o.go:SetScript("OnClick", function()
+            if o.dungeon then StartPlan(o.dungeon) f:Hide() end
+        end)
+        o.open = CreateFrame("Button", nil, o, "UIPanelButtonTemplate")
+        o.open:SetSize(104, 22)
+        o.open:SetPoint("TOPRIGHT", -10, -44)
+        o.open:SetText("Details")
+        o.open:SetScript("OnClick", function()
+            if not o.dungeon then return end
+            if not frame then frame = CreateWindow() end
+            state.dungeon, state.offset, state.selected, state.gearSelected = o.dungeon, 0, nil, nil
+            frame:Show()
+            Refresh()
+            f:Hide()
+        end)
+        f.options[i] = o
+    end
+    f:Hide()
+    return f
+end
+
+local function RefreshNext()
+    if not nextFrame or not nextFrame:IsShown() then return end
+    local top, upcoming = NextOptions()
+    local lvl = UnitLevel("player") or 1
+    for i = 1, 3 do
+        local o, row = top[i], nextFrame.options[i]
+        row.dungeon = o and o.d or nil
+        if o then
+            row.text:SetText(OptionText(i, o))
+            row:Show()
+        else
+            row:Hide()
+        end
+    end
+    local note
+    if #top == 0 then
+        note = upcoming and ("No dungeon is in your level range yet. %s opens at level %d."):format(upcoming.name, upcoming.lo)
+            or "No dungeon is in your level range."
+    else
+        note = ("Dungeons in range at level %d, best quest XP per hour first."):format(lvl)
+        if upcoming then note = note .. ("  Next to open: %s at level %d."):format(upcoming.name, upcoming.lo) end
+    end
+    nextFrame.note:SetText(note)
+    nextFrame:SetHeight(66 + max(1, #top) * 98)
+end
+
+OpenNext = function()
+    if not nextFrame then nextFrame = CreateNext() end
+    nextFrame:Show()
+    RefreshNext()
+end
+
+-- A cheer when a level opens something new: a dungeon, or dungeon quests.
+local function OnLevelUp(level)
+    level = tonumber(level) or UnitLevel("player") or 1
+    local side = PlayerSide()
+    local opened, quests = {}, {}
+    for _, d in ipairs(ns.dungeons) do
+        if not d.side or d.side == side then
+            if d.lo == level then
+                tinsert(opened, ("%s (levels %d-%d)"):format(d.name, d.lo, d.hi))
+            end
+            if level >= d.lo - 2 and level <= d.hi + 2 then
+                for _, id in ipairs(d.quests) do
+                    local q = ns.quests[id]
+                    if q and q.req == level and ForMySide(q) and ForMyClass(q) and not IsDone(id) then
+                        tinsert(quests, q.name .. " (" .. d.name .. ")")
+                    end
+                end
+            end
+        end
+    end
+    if #opened == 0 and #quests == 0 then return end
+    if #opened > 0 then
+        Alert(("Congratulations on level %d! New dungeon%s for you: %s."):format(level, #opened == 1 and "" or "s", concat(opened, ", ")))
+    else
+        Alert(("Congratulations on level %d! %d new dungeon quest%s you can pick up."):format(level, #quests, #quests == 1 and "" or "s"))
+    end
+    for i, name in ipairs(quests) do
+        if i <= 6 then Say("   New quest: " .. name) end
+    end
+    Say("Type /zd next, or click Where do I go next?, to see your best options.")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1696,7 +2242,9 @@ ScheduleRefresh = function()
         pending = false
         logCache = nil
         Refresh()
+        UpdateCard()
         UpdateTracker()
+        if nextFrame and nextFrame:IsShown() then RefreshNext() end
     end)
 end
 
@@ -1711,6 +2259,11 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
     if event == "ADDON_LOADED" then
         if arg1 == addonName then
             ZDungeonDB = ZDungeonDB or {}
+            local saved = ZDungeonDB.plans and ZDungeonDB.plans[CharKey()]
+            if type(saved) == "table" and saved.key and type(saved.ids) == "table" then
+                saved.chain, saved.order = saved.chain or {}, saved.order or {}
+                plan = saved
+            end
             print("|cffffd100ZDungeon|r loaded. Type |cffffffff/zd|r to see dungeon quests and their XP.")
         end
     elseif event == "ENCOUNTER_END" then
@@ -1720,12 +2273,13 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
     elseif event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED" or event == "ZONE_CHANGED_INDOORS"
         or event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_UNGHOST" or event == "PLAYER_ALIVE" then
         travelCache = {}
-        C_Timer.After(1, CheckLocation)
+        C_Timer.After(1, function() CheckLocation() UpdateCard() end)
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         -- fires constantly elsewhere (auction scans): only matters while the gear list is up
         if frame and frame:IsShown() and state.mode == "gear" then ScheduleRefresh() end
     elseif event == "PLAYER_LEVEL_UP" then
         clientXP, ratioCount = {}, -1
+        OnLevelUp(arg1)
         ScheduleRefresh()
     else
         ScheduleRefresh()

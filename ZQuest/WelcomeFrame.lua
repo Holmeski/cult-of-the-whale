@@ -14,6 +14,14 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.3",
+        date = "November 2026",
+        changes = {
+            "When a step is about several mobs or people, each gets its own row above the Find button. Click a row to target and mark exactly that one",
+            "Kill and collect steps that don't name their mobs now get them from Questie, if you have it",
+        },
+    },
+    {
         version = "1.7.2",
         date = "November 2026",
         changes = {

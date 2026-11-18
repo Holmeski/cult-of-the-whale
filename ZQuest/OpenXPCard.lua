@@ -3383,6 +3383,39 @@ do
         return out
     end
 
+    -- The mobs a quest wants (to kill, or that drop its items), from
+    -- Questie's data, for steps that don't name them. Empty without Questie.
+    local mobCache = {}
+    function card.QuestMobs(id)
+        if mobCache[id] then return mobCache[id] end
+        local out, seen = {}, {}
+        local quest = QGet("Quest", id)
+        if not quest then return out end -- Questie isn't ready: ask again later
+        local function npc(npcId)
+            local n = npcId and QGet("NPC", npcId)
+            local name = n and n.name
+            if type(name) == "string" and not seen[name] and #out < 4 then
+                seen[name] = true
+                tinsert(out, name)
+            end
+        end
+        pcall(function()
+            for _, o in ipairs(quest.ObjectiveData or {}) do
+                if o.Type == "monster" then
+                    npc(o.Id)
+                elseif o.Type == "killcredit" then
+                    for _, n in ipairs(o.IdList or {}) do npc(n) end
+                elseif o.Type == "item" then
+                    local item = QGet("Item", o.Id)
+                    local drops = item and item.npcDrops
+                    for i = 1, math.min(type(drops) == "table" and #drops or 0, 2) do npc(drops[i]) end
+                end
+            end
+        end)
+        mobCache[id] = out
+        return out
+    end
+
     -- friends, enemies, things that can only be clicked, and where to go
     function card.FindTargets(steps)
         local friends, enemies, picks, seen = {}, {}, {}, {}
@@ -3414,6 +3447,15 @@ do
                         for _, n in ipairs(f) do add(friends, n) end
                         for _, n in ipairs(en) do add(enemies, n) end
                         for _, n in ipairs(p) do add(picks, n) end
+                    end
+                end
+            end
+            -- a kill or collect step that names no mob: ask Questie
+            if #enemies == 0 and #friends == 0 then
+                for _, e in ipairs(step.elements or {}) do
+                    local id = tonumber(e.questId)
+                    if e.tag == "complete" and id and id > 0 and not e.completed then
+                        for _, n in ipairs(card.QuestMobs(id)) do add(enemies, n) end
                     end
                 end
             end
@@ -3521,6 +3563,45 @@ do
     btn.where:SetJustifyH("LEFT")
     if btn.where.SetWordWrap then btn.where:SetWordWrap(false) end
 
+    -- One slim row per name above the button, when a step names several:
+    -- each targets and marks exactly that one.
+    local ROW_H, MAX_ROWS = 20, 4
+    local rows = {}
+    for i = 1, MAX_ROWS do
+        local row = CreateFrame("Button", "ZQuestFindRow" .. i, UIParent, "SecureActionButtonTemplate")
+        row:SetSize(W_MAX, ROW_H)
+        row:SetFrameStrata("MEDIUM")
+        row:SetAttribute("type1", "macro")
+        row:SetAttribute("macrotext1", "")
+        if row.RegisterForClicks then row:RegisterForClicks("AnyUp", "AnyDown") end
+        row:Hide()
+        row.bg = row:CreateTexture(nil, "BACKGROUND")
+        row.bg:SetAllPoints()
+        row.bg:SetColorTexture(C.bg[1], C.bg[2], C.bg[3], 0.88)
+        row.hl = row:CreateTexture(nil, "HIGHLIGHT")
+        row.hl:SetAllPoints()
+        row.hl:SetColorTexture(1, 1, 1, 0.1)
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetTexture(TEX .. "target")
+        row.icon:SetSize(12, 12)
+        row.icon:SetPoint("LEFT", 10, 0)
+        row.label = row:CreateFontString(nil, "OVERLAY")
+        FixedFont(row.label, 11, "")
+        row.label:SetPoint("LEFT", 30, 0)
+        row.label:SetPoint("RIGHT", -6, 0)
+        row.label:SetJustifyH("LEFT")
+        if row.label.SetWordWrap then row.label:SetWordWrap(false) end
+        rows[i] = row
+    end
+    card.findRows = rows
+
+    -- one name: "/cleartarget", "/targetexact", and a marker of its own
+    function card.FindOneMacro(name, friendly, index)
+        local forever = addon.game == "FOREVER"
+        local mark = friendly and ((index - 1) % 4 + 1) or (8 - (index - 1) % 3)
+        return "/cleartarget\n/targetexact " .. name .. "\n/tm " .. (forever and "!" or "~") .. mark
+    end
+
     local state = {sig = nil, names = {}, first = nil, picks = {}, flash = 0}
 
     local function Paint()
@@ -3532,7 +3613,7 @@ do
             btn.name:SetTextColor(unpack(C.text))
             btn.name:SetText(state.first .. (n > 1 and fmt(" +%d", n - 1) or ""))
             btn.where:SetTextColor(unpack(C.dim))
-            btn.where:SetText(state.where or L("Click to find and mark"))
+            btn.where:SetText(state.where or (n > 1 and L("Click: whichever is in range") or L("Click to find and mark")))
         else
             Tint(btn.icon, C.faint)
             btn.name:SetTextColor(unpack(C.dim))
@@ -3563,6 +3644,8 @@ do
         local shown = f:IsShown()
         if not shown then
             if btn:IsShown() then btn:Hide() end
+            for _, row in ipairs(rows) do if row:IsShown() then row:Hide() end end
+            state.x = nil
             return
         end
 
@@ -3578,6 +3661,31 @@ do
             state.sig, state.names, state.first, state.picks, state.where = sig, names, names[1], picks, where
             state.friends, state.enemies = friends, enemies
             btn:SetAttribute("macrotext1", macro)
+            -- a row each when there is more than one name
+            local n, fi, ei = 0, 0, 0
+            local function setRow(name, friendly)
+                n = n + 1
+                local row = rows[n]
+                if not row then return end
+                local index
+                if friendly then fi = fi + 1 index = fi else ei = ei + 1 index = ei end
+                row.who, row.friendly = name, friendly
+                row:SetAttribute("macrotext1", card.FindOneMacro(name, friendly, index))
+                row.label:SetText(name)
+                if friendly then
+                    row.label:SetTextColor(0.55, 0.9, 0.6)
+                    Tint(row.icon, {0.55, 0.9, 0.6})
+                else
+                    row.label:SetTextColor(1, 0.6, 0.45)
+                    Tint(row.icon, {1, 0.6, 0.45})
+                end
+            end
+            if #names > 1 then
+                for _, name in ipairs(friends) do setRow(name, true) end
+                for _, name in ipairs(enemies) do setRow(name, false) end
+            end
+            state.rows = math.min(n, MAX_ROWS)
+            state.x = nil -- place the rows again
             state.flash = 0
             Paint()
         end
@@ -3603,6 +3711,18 @@ do
             btn:SetWidth(w)
             btn:ClearAllPoints()
             btn:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", x, y)
+            for i, row in ipairs(rows) do
+                if i <= (state.rows or 0) then
+                    if row:GetScale() ~= btn:GetScale() then row:SetScale(btn:GetScale()) end
+                    row:SetWidth(w)
+                    row:ClearAllPoints()
+                    row:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", x, y + H + 1 + (i - 1) * (ROW_H + 1))
+                    row:SetFrameLevel((f:GetFrameLevel() or 1) + 20)
+                    if not row:IsShown() then row:Show() end
+                elseif row:IsShown() then
+                    row:Hide()
+                end
+            end
         end
         btn:SetFrameLevel((f:GetFrameLevel() or 1) + 20)
         if not btn:IsShown() then btn:Show() end
@@ -3680,6 +3800,29 @@ do
         end
         if C_Timer and C_Timer.After then C_Timer.After(0.1, Check) else Check() end
     end)
+
+    for _, row in ipairs(rows) do
+        row:SetScript("PostClick", function(self, button, down)
+            if down or button ~= "LeftButton" then return end
+            local function Check()
+                if UnitExists and UnitExists("target") then
+                    Flash(fmt(L("Found and marked: %s"), self.who or ""), C.green)
+                else
+                    Flash(fmt(L("%s isn't in range yet"), self.who or ""), C.orange)
+                end
+            end
+            if C_Timer and C_Timer.After then C_Timer.After(0.1, Check) else Check() end
+        end)
+        row:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+            GameTooltip:SetText(self.who or "", 1, 1, 1)
+            local note = card.FindNote(self.who)
+            if note then GameTooltip:AddLine(note, C.blue[1], C.blue[2], C.blue[3], true) end
+            GameTooltip:AddLine(L("Click: target this one and put a marker over its head."), 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
 
     btn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")

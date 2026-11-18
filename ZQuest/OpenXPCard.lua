@@ -1306,6 +1306,12 @@ local function LayoutBlock(b, step, first)
                 break
             end
         end
+        -- sent back here for a quest a later step needs
+        local rt = card.returnTo
+        if rt and rt.auto and rt.guide == addon.currentGuide and step.index and step.index < rt.step then
+            tinsert(lines, 1, {text = "|cFFF2C35C" .. fmt(L("Step %d needs %s, so pick it up here first. Then back to step %d."),
+                rt.step, QuestName(rt.quest), rt.step) .. "|r", plain = true})
+        end
         -- a later step you're standing next to, done first
         local here = card.here
         if here and step.index == here.index then
@@ -2132,6 +2138,7 @@ function card.Signature()
         card.detour and (card.detour.index or 0) or -1, card.sizing and 1 or 0,
         card.histOffset or 0, card.hold and card.hold.index or 0,
         card.here and card.here.index or 0,
+        card.returnTo and card.returnTo.step or 0,
     }
     local travel = addon.travel and addon.travel.Lines and addon.travel.Lines()
     tinsert(parts, travel and table.concat(travel, "|") or "")
@@ -2439,8 +2446,11 @@ function Tick()
                 card.returnTo = nil
                 card.hold = nil
                 card.ManualSetStep(r.step)
+            elseif cur and cur >= r.step then
+                card.returnTo = nil -- you went on by hand
             end
         end
+        pcall(card.CheckMissingPickup)
         pcall(card.CheckTrainerSteps)
         pcall(card.CheckTravelSteps)
         pcall(card.CheckHereSteps)
@@ -3008,6 +3018,40 @@ local function HereDone(step)
             end
         end
     end
+    return true
+end
+
+-- On a step for a quest you don't have, when this guide picks that quest up
+-- on an earlier step (the guide moved on past it): go to the pickup first,
+-- without asking, and come back once the quest is in your log. Once per
+-- step, so skipping the pickup by hand doesn't send you round again; after
+-- that the card shows the usual "You don't have ..." with its buttons.
+function card.CheckMissingPickup()
+    local guide = addon.currentGuide
+    if not (guide and guide.steps) then return end
+    if card.hold or card.detour or card.returnTo or card.here then return end
+    local cur = CurrentStep()
+    local step = cur and guide.steps[cur]
+    if not step or step.completed then return end
+    card.autoPickup = card.autoPickup or {}
+    local key = tostring(guide.name) .. ":" .. cur
+    if card.autoPickup[key] then return end
+    local ok, problem = pcall(card.StepProblem, step)
+    if not ok or not problem or problem.kind ~= "missing" then return end
+    card.autoPickup[key] = true
+    local accept = card.FindAcceptStep(guide, problem.quest, cur)
+    if not accept or accept >= cur then return end
+    -- a pickup you skipped by hand stays skipped
+    local rec = ZQCData and ZQCData.stepSkip and ZQCData.stepSkip[accept]
+    if rec or (guide.steps[accept] and guide.steps[accept].skip) then return end
+    card.returnTo = {guide = guide, step = cur, quest = problem.quest, auto = true}
+    card.hold = nil
+    card.ManualSetStep(accept)
+    if CurrentStep() ~= accept then
+        card.returnTo = nil
+        return
+    end
+    card.Refresh(true)
     return true
 end
 

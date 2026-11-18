@@ -14,6 +14,14 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.5",
+        date = "November 2026",
+        changes = {
+            "When a step needs a quest you don't have and the guide picks that quest up on an earlier step, the card now takes you to the pickup on its own and brings you back afterwards",
+            "Fixed: coming back to the leveling guide could land you on the kill step of a quest whose pickup was a few steps behind you",
+        },
+    },
+    {
         version = "1.7.4",
         date = "November 2026",
         changes = {

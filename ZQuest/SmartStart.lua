@@ -471,6 +471,12 @@ function SS.PlanSteps(guide, prereqs, skipped, minStart, level)
                             local j = acceptAt[p]
                             if j and (not back or j < back) then back = j end
                         end
+                        -- the quest itself, when you don't have it and its
+                        -- pickup is one of those open steps
+                        if q.tag ~= "accept" and not SS.api.IsOnQuest(q.id) and not SS.api.IsTurnedIn(q.id) then
+                            local j = acceptAt[q.id]
+                            if j and (not back or j < back) then back = j end
+                        end
                     end
                 end
             end

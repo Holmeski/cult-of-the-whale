@@ -14,6 +14,13 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.7",
+        date = "November 2026",
+        changes = {
+            "With ZDungeon installed, its planned dungeon guides now live in the ZQuest Dungeons menu, in place of the fixed ones. There is no separate ZDungeon entry any more",
+        },
+    },
+    {
         version = "1.7.6",
         date = "November 2026",
         changes = {

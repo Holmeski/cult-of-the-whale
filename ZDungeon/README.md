@@ -15,6 +15,7 @@ Status: early release. Built and tested outside the game; in-game testing is in 
 
 ### The dungeon guide
 - With ZQuest installed, the guide for a dungeon loads onto **ZQuest's own guide card**, under a **Dungeons** tab next to **Quests**. It uses ZQuest's arrow, its "Getting there" travel steps, its map pins and its automatic ticking.
+- ZDungeon's guides live in ZQuest's own **ZQuest Dungeons** menu. Where ZQuest ships a guide for a dungeon, ZDungeon's planned guide takes its place under the same name; other dungeons get their own entry there. On the Dungeons tab, the tab reads **Change dungeon**.
 - The guide plans the trip from where you stand: it always takes the nearest errand that is allowed yet (a pickup, something to fetch, a hand-in), so everything in one town is done in one visit and quest chains stay in order. Then the trip to the entrance, what to finish inside, and the hand-ins, nearest to the door first.
 - A chain quest that sends you somewhere first gets its own step: where the bookshelf is, or where the mobs are, before the hand-in. Dungeon quests whose mobs or items are all outside the instance are done on the way in.
 - Each step names who to talk to or what to kill, so ZQuest's Find button can target and mark them.

@@ -2262,7 +2262,11 @@ end
 -- shows Quests | Dungeons tabs above its card to switch between the two.
 -- ---------------------------------------------------------------------------
 
-local ZQ_GROUP = "ZDungeon"
+-- ZDungeon's guides live in ZQuest's own "ZQuest Dungeons" menu. Where ZQuest
+-- ships a guide for a dungeon, ZDungeon's takes its place under the same
+-- name; other dungeons get an entry of their own in the same menu.
+local ZQ_GROUP = "ZQuest Dungeons"
+local OLD_GROUP = "ZDungeon" -- where versions before 1.9 kept them
 
 ZQuestApi = function()
     local api = _G.RXPGuides
@@ -2278,8 +2282,17 @@ end
 local function BuildGuideText(d)
     logCache = nil
     local lvl = UnitLevel("player") or 1
-    local name = ("%s (level %d)"):format(d.name, lvl)
-    local L = {"#forever", "#version 1", "#group " .. ZQ_GROUP, "#name " .. name, ""}
+    local subgroup = ("%d-%d"):format(d.lo, d.hi)
+    local name = subgroup .. " " .. d.name
+    local zqApi = _G.RXPGuides
+    if zqApi and zqApi.DungeonGuideInfo then
+        local ok, g, sub, n = pcall(zqApi.DungeonGuideInfo, d.name)
+        if ok and g == ZQ_GROUP and type(n) == "string" and n ~= "" then
+            name = n
+            if type(sub) == "string" and sub ~= "" then subgroup = sub end
+        end
+    end
+    local L = {"#forever", "#version 1", "#group " .. ZQ_GROUP, "#subgroup " .. subgroup, "#name " .. name, ""}
     local function add(line) tinsert(L, line) end
     local function goto_(p, radius, text)
         if p and p.m and p.x and p.y then
@@ -2639,7 +2652,7 @@ end
 
 -- Goes up whenever the guide writer changes what a guide says, so a guide
 -- saved by an older version is written again instead of loaded as it was.
-local GUIDE_REV = 4
+local GUIDE_REV = 5
 local staleGuideWasUp = false
 
 local function RememberGuide(d, name, text)
@@ -2654,14 +2667,34 @@ local function StartZQuestGuide(d)
     if not api then return false end
     local ok, text, name = pcall(BuildGuideText, d)
     if not ok or not text then return false end
-    if not api.HasGuide(ZQ_GROUP, name) then
-        pcall(api.RegisterGuide, text)
-        if not api.HasGuide(ZQ_GROUP, name) then return false end
-    end
-    local loaded = select(2, pcall(api.LoadGuideByName, ZQ_GROUP, name))
+    -- written again on every start (it is planned from where you stand);
+    -- registering under the same name replaces the one before
+    pcall(api.RegisterGuide, text)
+    if not api.HasGuide(ZQ_GROUP, name) then return false end
+    local loaded = select(2, pcall(api.LoadGuideByName, ZQ_GROUP, name, true))
     if loaded ~= true then return false end
     RememberGuide(d, name, text)
     return true
+end
+
+-- Put ZDungeon's guide for every dungeon you have quests for into the
+-- "ZQuest Dungeons" menu, so picking a dungeon there gets the planned guide
+-- too. The one on the card right now is left alone.
+local function RegisterAllGuides()
+    local api = ZQuestApi()
+    if not api then return end
+    local zc = _G.ZQCData
+    local upGroup = type(zc) == "table" and zc.currentGuideGroup
+    local upName = type(zc) == "table" and zc.currentGuideName
+    local side = PlayerSide()
+    for _, d in ipairs(ns.dungeons) do
+        if not d.side or d.side == side then
+            local ok, text, name, count = pcall(BuildGuideText, d)
+            if ok and text and (count or 0) > 0 and not (upGroup == ZQ_GROUP and upName == name) then
+                pcall(api.RegisterGuide, text)
+            end
+        end
+    end
 end
 
 -- What the Dungeons tab does: back to your dungeon guide, or pick a dungeon.
@@ -3185,7 +3218,9 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
                     -- again once the quest log can be read (see below)
                     last.text = nil
                     local zc = _G.ZQCData
-                    staleGuideWasUp = type(zc) == "table" and zc.currentGuideGroup == ZQ_GROUP
+                    staleGuideWasUp = type(zc) == "table" and
+                        (zc.currentGuideGroup == OLD_GROUP or
+                         (zc.currentGuideGroup == ZQ_GROUP and zc.currentGuideName == last.name))
                 elseif last and last.text and zq.RegisterGuide then
                     pcall(zq.RegisterGuide, last.text)
                 end
@@ -3205,13 +3240,17 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
         or event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_UNGHOST" or event == "PLAYER_ALIVE" then
         travelCache = {}
         C_Timer.After(1, function() CheckLocation() UpdateCard() end)
+        if event == "PLAYER_ENTERING_WORLD" and not ns.menuFilled then
+            ns.menuFilled = true
+            C_Timer.After(8, function() pcall(RegisterAllGuides) end)
+        end
         if staleGuideWasUp and event == "PLAYER_ENTERING_WORLD" then
             staleGuideWasUp = false
             C_Timer.After(4, function()
                 local last = ZDungeonDB and ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
                 local d = last and last.key and last.rev ~= GUIDE_REV and DungeonByKey(last.key)
                 if d and StartZQuestGuide(d) then
-                    Say(d.name .. ": your dungeon guide was updated. It now sends you to quest items and mobs before the hand-in.")
+                    Say(d.name .. ": your dungeon guide was updated. Dungeon guides are now under ZQuest Dungeons in the guide menu.")
                 end
             end)
         end
@@ -3227,6 +3266,7 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
         pcall(LearnXP, arg1, arg2)
         ScheduleRefresh()
     elseif event == "PLAYER_LEVEL_UP" then
+        C_Timer.After(5, function() pcall(RegisterAllGuides) end)
         clientXP, ratioCount = {}, -1
         OnLevelUp(arg1)
         ScheduleRefresh()

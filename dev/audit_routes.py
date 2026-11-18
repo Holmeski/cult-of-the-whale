@@ -44,7 +44,7 @@ for side, cls in SIDES:
         out = subprocess.run([sys.executable, os.path.join(here, "harness.py"), str(lvl), "zq", "gear"],
                              capture_output=True, text=True, cwd=root, env=env)
         report["runs"] += 1
-        guides = re.findall(r'---- ZDungeon\|\|(.*?)\n(.*?)(?=\n---- |\nown card)', out.stdout, re.S)
+        guides = re.findall(r'---- ZQuest Dungeons\|\|(.*?)\n(.*?)(?=\n---- |\nown card)', out.stdout, re.S)
         if not guides:
             problem("crash", "%s %d" % (side, lvl), (out.stderr or out.stdout)[-400:])
             continue
@@ -101,15 +101,18 @@ for side, cls in SIDES:
                 if st["map"] and (not pre or pre[-1] != st["map"]):
                     pre.append(st["map"])
             extra = len(pre) - len(set(pre))
-            report["guides"]["%s|%s" % (name, side)] = {"steps": len(steps), "quests": len(quests), "trips": len(pre),
-                                                        "extraTrips": extra, "followUp": follow}
+            # guides are named per dungeon, so keep the worst case across levels
+            row = {"steps": len(steps), "quests": len(quests), "trips": len(pre), "extraTrips": extra, "followUp": follow}
+            old = report["guides"].get("%s|%s" % (name, side), {})
+            report["guides"]["%s|%s" % (name, side)] = {k: max(v, old.get(k, 0)) for k, v in row.items()}
+            report["built"] = report.get("built", 0) + 1
             if extra >= 3:
                 problem("many return trips", where, "%d maps visited more than once before the run: %s" % (extra, pre))
 
 kinds = {}
 for p in report["problems"]:
     kinds[p["kind"]] = kinds.get(p["kind"], 0) + 1
-print("harness runs: %d, guides: %d, problems: %d %s" % (report["runs"], len(report["guides"]), len(report["problems"]), kinds))
+print("harness runs: %d, guides built: %d, problems: %d %s" % (report["runs"], report.get("built", 0), len(report["problems"]), kinds))
 for p in report["problems"][:60]:
     print("  [%s] %s: %s" % (p["kind"], p["where"], p["detail"]))
 if len(sys.argv) > 1:

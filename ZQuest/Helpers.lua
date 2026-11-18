@@ -692,9 +692,25 @@ end
 _G.RXPGuides.HasGuide = function(group, name)
     return addon.GetGuideTable(group, name) ~= nil
 end
-_G.RXPGuides.LoadGuideByName = function(group, name)
+-- fresh = true starts the guide at its first step, forgetting where you
+-- were in a guide of the same name (ZDungeon writes its guides again, under
+-- the same name, every time one is started).
+_G.RXPGuides.LoadGuideByName = function(group, name, fresh)
     local guide = addon.GetGuideTable(group, name)
     if not guide then return false end
+    if fresh and type(ZQCData) == "table" then
+        if ZQCData.guideProgress and guide.key then ZQCData.guideProgress[guide.key] = nil end
+        if ZQCData.currentGuideGroup == guide.group and ZQCData.currentGuideName == guide.name then
+            ZQCData.currentStep, ZQCData.currentStepId = 1, nil
+        end
+    end
     addon:LoadGuide(guide)
     return true
+end
+
+-- ZDungeon: the built-in guide for a dungeon, so its own guide can take that
+-- guide's place in the menu. Returns group, subgroup, name (or nothing).
+_G.RXPGuides.DungeonGuideInfo = function(dungeon)
+    local guide = FindDungeonGuide(dungeon)
+    if guide then return guide.group, guide.subgroup, guide.name end
 end

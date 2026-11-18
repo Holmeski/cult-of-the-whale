@@ -217,6 +217,73 @@ def who(ref, side):
     return cands[0][1:] if cands else None
 
 
+def mid_place(entity, idx, prefer=()):
+    """Like place(), but for things with many spawn points: the point in the
+    middle of the biggest group, in one of the preferred maps if it is there.
+    Returns (place, number of points, in a preferred map, also inside a dungeon)."""
+    sp = spawns(entity, idx)
+    best, inside = None, None
+    for area, pts in sp.items():
+        if area in ALL_DUNGEON_AREAS:
+            inside = AREA_TO_DUNGEON[area]
+            continue
+        good = [p for p in as_list(pts) if p and len(p) >= 2 and p[0] >= 0]
+        if good and AMAP.get(area):
+            rank = (1 if AMAP[area] in prefer else 0, len(good))
+            if not best or rank > best[2]:
+                best = (area, good, rank)
+    if best:
+        pts = best[1]
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        m = min(pts, key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
+        return ("map", AMAP[best[0]], round(m[0], 1), round(m[1], 1)), len(pts), bool(best[2][0]), bool(inside)
+    if inside:
+        return ("in", inside), 0, False, True
+    return None, 0, False, False
+
+
+def goals(q, prefer=()):
+    """What the quest asks for and where to get it, in the order the game
+    lists objectives: creatures, objects, then items."""
+    out = []
+    obj = q.objectives if isinstance(q.objectives, (dict, list)) else {}
+
+    def goal(text, kind, ent, idx):
+        pl, c, near, both = mid_place(ent, idx, prefer)
+        return {"t": text, "k": kind, "n": li(ent, 1), "pl": pl, "c": c, "near": near, "both": both}
+
+    for e in as_list(li(obj, 1)):
+        n = db["n"].get(li(e, 1))
+        out.append(goal(li(n, 1), "npc", n, 7) if n else None)
+    for e in as_list(li(obj, 2)):
+        o = db["o"].get(li(e, 1))
+        out.append(goal(li(o, 1), "obj", o, 4) if o else None)
+    for e in as_list(li(obj, 3)):
+        it = db["i"].get(li(e, 1))
+        g = None
+        if it:
+            cands = []
+            for oid in as_list(li(it, 3)):
+                o = db["o"].get(oid)
+                if o:
+                    cands.append(goal(li(it, 1), "obj", o, 4))
+            for nid in as_list(li(it, 2)):
+                n = db["n"].get(nid)
+                if n:
+                    cands.append(goal(li(it, 1), "npc", n, 7))
+            # on the world map, in the quest's own zone, then most spawns
+            cands.sort(key=lambda g: (0 if (g["pl"] and g["pl"][0] == "map") else 1 if g["pl"] else 2,
+                                      0 if g["near"] else 1, -g["c"]))
+            if cands:
+                g = cands[0]
+                g["more"] = len(cands) - 1
+        out.append(g)
+    for e in as_list(li(obj, 5)):
+        out.append(None)
+    return out
+
+
 def only_in(entity, idx, areas):
     sp = spawns(entity, idx)
     return bool(sp) and all(k in areas for k in sp)
@@ -282,6 +349,13 @@ def record(qid):
         "no": sum(len(as_list(li(q.objectives or {}, i))) for i in (1, 2, 3, 5)) if isinstance(q.objectives, (dict, list)) else 0,
         "text": text or "",
     }
+    near = set()
+    if (q.zone or 0) > 0 and AMAP.get(q.zone):
+        near.add(AMAP[q.zone])
+    for w in (r["start"], r["end"]):
+        if w and w[2] and w[2][0] == "map":
+            near.add(w[2][1])
+    r["goals"] = goals(q, near)
     QUESTS[qid] = r
     keep = []
     for p in r["preAll"] + r["preAny"]:
@@ -352,6 +426,24 @@ for qid in sorted(QUESTS):
         f.append("no=%d" % r["no"])
     if r["share"]:
         f.append("share=true")
+    if any(g and g["pl"] for g in r["goals"]):
+        gl = []
+        for i, g in enumerate(r["goals"], 1):
+            if not (g and g["pl"]):
+                continue
+            p = ["i=%d" % i, "t=" + lua_str(g["t"]), "k=" + lua_str(g["k"]), "n=" + lua_str(g["n"])]
+            if g["pl"][0] == "map":
+                p += ["m=%d" % g["pl"][1], "x=%s" % g["pl"][2], "y=%s" % g["pl"][3]]
+                if g["c"] > 1:
+                    p.append("c=%d" % g["c"])
+                if g["both"]:
+                    p.append("both=true")
+            else:
+                p.append("inside=" + lua_str(g["pl"][1]))
+            if g.get("more"):
+                p.append("more=%d" % g["more"])
+            gl.append("{" + ",".join(p) + "}")
+        f.append("goals={%s}" % ",".join(gl))
     for k in ("skill", "rep"):
         if r[k]:
             f.append(k + "=true")

@@ -14,6 +14,16 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.1",
+        date = "November 2026",
+        changes = {
+            "New: a Find button on the guide card, above its top right corner. Click it to target the quest giver or mob for the step you're on and put a marker over its head",
+            "Under the name it says where that is, such as The Sepulcher, down in the crypt. Right-click the button to write your own note for anyone who is hard to find",
+            "Things you click on, like a bookshelf, can't be targeted. The button says so and the arrow takes you there",
+            "With ZDungeon installed, the card has Quests and Dungeons tabs",
+        },
+    },
+    {
         version = "1.7.0",
         date = "November 2026",
         changes = {

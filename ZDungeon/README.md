@@ -16,6 +16,8 @@ Status: early release. Built and tested outside the game; in-game testing is in 
 ### The dungeon guide
 - With ZQuest installed, the guide for a dungeon loads onto **ZQuest's own guide card**, under a **Dungeons** tab next to **Quests**. It uses ZQuest's arrow, its "Getting there" travel steps, its map pins and its automatic ticking.
 - The guide runs in order: chain quests first, then the pick-ups (nearest quest giver first), the trip to the entrance, what to finish inside, and the hand-ins.
+- A chain quest that sends you somewhere first gets its own step: where the bookshelf is, or where the mobs are, before the hand-in. Dungeon quests whose mobs or items are all outside the instance are done on the way in.
+- Each step names who to talk to or what to kill, so ZQuest's Find button can target and mark them.
 - It only includes what you can do at your level. Quests you are too low for are listed at the end with the level they need.
 - Click **Quests** to go back to your leveling guide where you left it, and **Dungeons** to return to the dungeon guide.
 - Without ZQuest, ZDungeon shows the same steps on a small card of its own.

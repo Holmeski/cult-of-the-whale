@@ -2254,6 +2254,45 @@ local function BuildGuideText(d)
         end
     end
 
+    -- "Target this" lines: ZQuest's target buttons pick these names up
+    local function unit_(tag, n)
+        n = n and GuideLine(n)
+        if n and n ~= "" and not n:find("[,>|]") then add("    ." .. tag .. " " .. n) end
+    end
+
+    -- A step that sends you to what a quest asks for (the bookshelf, the
+    -- mobs) before its hand-in. Only for things on the world map. With
+    -- dungeonQuest set, only when everything it asks for is outside.
+    local function goalStep(id, q, dungeonQuest)
+        local gs = {}
+        for _, g in ipairs(q.goals or {}) do
+            if g.m and g.x and g.y and not (dungeonQuest and g.both) then tinsert(gs, g) end
+        end
+        if #gs == 0 or (dungeonQuest and #gs < (q.no or 0)) then return false end
+        add("step")
+        goto_(gs[1])
+        for _, g in ipairs(gs) do
+            local n, t = GuideLine(g.n), GuideLine(g.t)
+            local line
+            if g.k == "obj" then
+                line = (t == n) and ("Click |cRXP_PICK_" .. n .. "|r")
+                    or ("Loot |cRXP_LOOT_" .. t .. "|r from |cRXP_PICK_" .. n .. "|r")
+            else
+                line = (t == n) and ("Find |cRXP_ENEMY_" .. n .. "|r")
+                    or ("Kill |cRXP_ENEMY_" .. n .. "|r for |cRXP_LOOT_" .. t .. "|r")
+                if (g.more or 0) > 0 then line = line .. " (other mobs there drop it too)" end
+            end
+            line = line .. (" - %s %.1f, %.1f"):format(ZoneName(g.m) or "map", g.x, g.y)
+            if (g.c or 0) > 1 then line = line .. " and around it" end
+            add("    >>" .. line)
+        end
+        for _, g in ipairs(gs) do
+            if g.k == "npc" then unit_("mob", g.n) end
+        end
+        for i = 1, (q.no or 0) do add(("    .complete %d,%d"):format(id, i)) end
+        return true
+    end
+
     -- chain quests that are not dungeon quests themselves: take, do, hand in
     for _, id in ipairs(chain) do
         local q = ns.quests[id]
@@ -2263,14 +2302,20 @@ local function BuildGuideText(d)
             if p and p.k ~= "item" and not p.inside then
                 goto_(p)
                 add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(p.n) .. "|r")
+                if p.k == "npc" then unit_("target", p.n) end
             elseif p then
                 add("    >>" .. GuideLine(p.k == "item" and ("Loot " .. p.n .. (p.from and (" from " .. p.from) or "")) or ("Find " .. p.n)))
             end
             add(("    .accept %d >>Accept %s"):format(id, GuideLine(q.name)))
+            local sent = goalStep(id, q)
             add("step")
             local fin = q.finish or q.start
             if fin and not fin.inside then goto_(fin) end
-            if q.text and q.text ~= "" then add("    >>" .. GuideLine(q.text)) end
+            if fin and fin.k == "npc" and not fin.inside then
+                add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(fin.n) .. "|r")
+                unit_("target", fin.n)
+            end
+            if not sent and q.text and q.text ~= "" then add("    >>" .. GuideLine(q.text)) end
             add(("    .turnin %d >>Turn in %s"):format(id, GuideLine(q.name)))
         end
     end
@@ -2304,9 +2349,19 @@ local function BuildGuideText(d)
         add("step")
         goto_(g.place)
         add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(g.place.n) .. "|r")
+        if g.place.k == "npc" then unit_("target", g.place.n) end
         for _, id in ipairs(g.ids) do
             add(("    .accept %d >>Accept %s"):format(id, GuideLine(ns.quests[id].name)))
         end
+    end
+
+    -- dungeon quests whose items or mobs are all outside the instance
+    -- (the cave in front of it, the zone around it): do those on the way
+    local outside = {}
+    for _, id in ipairs(ids) do
+        local q = ns.quests[id]
+        local p = q.start
+        if not (p and (p.inside or p.k == "item")) and goalStep(id, q, true) then outside[id] = true end
     end
 
     -- the trip
@@ -2325,7 +2380,9 @@ local function BuildGuideText(d)
         if p and (p.inside or p.k == "item") then
             tinsert(inside, ("%s (%s)"):format(q.name, p.k == "item" and ("drops from " .. (p.from or "?")) or p.n))
         end
-        for i = 1, (q.no or 0) do tinsert(objectives, ("    .complete -%d,%d"):format(id, i)) end
+        if not outside[id] then
+            for i = 1, (q.no or 0) do tinsert(objectives, ("    .complete -%d,%d"):format(id, i)) end
+        end
     end
     if #objectives > 0 or #inside > 0 then
         add("step")
@@ -2350,6 +2407,7 @@ local function BuildGuideText(d)
         add("step")
         if not g.place.inside then goto_(g.place) end
         add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(g.place.n) .. "|r" .. (g.place.inside and " (inside the dungeon)" or ""))
+        if g.place.k == "npc" and not g.place.inside then unit_("target", g.place.n) end
         for _, id in ipairs(g.ids) do
             add(("    .turnin -%d >>Turn in %s"):format(id, GuideLine(ns.quests[id].name)))
         end
@@ -2368,10 +2426,15 @@ local function BuildGuideText(d)
     return concat(L, "\n") .. "\n", name, #ids
 end
 
+-- Goes up whenever the guide writer changes what a guide says, so a guide
+-- saved by an older version is written again instead of loaded as it was.
+local GUIDE_REV = 2
+local staleGuideWasUp = false
+
 local function RememberGuide(d, name, text)
     if not ZDungeonDB then return end
     ZDungeonDB.zq = ZDungeonDB.zq or {}
-    ZDungeonDB.zq[CharKey()] = {key = d.key, name = name, text = text}
+    ZDungeonDB.zq[CharKey()] = {key = d.key, name = name, text = text, rev = GUIDE_REV}
 end
 
 -- Write the guide and load it on ZQuest's card. False when ZQuest can't take it.
@@ -2394,6 +2457,11 @@ end
 OpenDungeonTab = function()
     local api = ZQuestApi()
     local saved = ZDungeonDB and ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
+    if api and saved and saved.key and saved.rev ~= GUIDE_REV then
+        -- written by an older version: write it again
+        local d = DungeonByKey(saved.key)
+        if d and StartZQuestGuide(d) then return end
+    end
     if api and saved and saved.name then
         if not api.HasGuide(ZQ_GROUP, saved.name) and saved.text then pcall(api.RegisterGuide, saved.text) end
         if api.HasGuide(ZQ_GROUP, saved.name) and select(2, pcall(api.LoadGuideByName, ZQ_GROUP, saved.name)) == true then
@@ -2893,7 +2961,15 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
             if zq then
                 zq.DungeonTab = {group = ZQ_GROUP, Open = function() OpenDungeonTab() end}
                 local last = ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
-                if last and last.text and zq.RegisterGuide then pcall(zq.RegisterGuide, last.text) end
+                if last and last.rev ~= GUIDE_REV then
+                    -- from an older version of the guide writer: it is written
+                    -- again once the quest log can be read (see below)
+                    last.text = nil
+                    local zc = _G.ZQCData
+                    staleGuideWasUp = type(zc) == "table" and zc.currentGuideGroup == ZQ_GROUP
+                elseif last and last.text and zq.RegisterGuide then
+                    pcall(zq.RegisterGuide, last.text)
+                end
             end
             local saved = ZDungeonDB.plans and ZDungeonDB.plans[CharKey()]
             if type(saved) == "table" and saved.key and type(saved.ids) == "table" then
@@ -2910,6 +2986,16 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
         or event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_UNGHOST" or event == "PLAYER_ALIVE" then
         travelCache = {}
         C_Timer.After(1, function() CheckLocation() UpdateCard() end)
+        if staleGuideWasUp and event == "PLAYER_ENTERING_WORLD" then
+            staleGuideWasUp = false
+            C_Timer.After(4, function()
+                local last = ZDungeonDB and ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
+                local d = last and last.key and last.rev ~= GUIDE_REV and DungeonByKey(last.key)
+                if d and StartZQuestGuide(d) then
+                    Say(d.name .. ": your dungeon guide was updated. It now sends you to quest items and mobs before the hand-in.")
+                end
+            end)
+        end
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         -- fires constantly elsewhere (auction scans): only matters while the gear list is up
         if frame and frame:IsShown() and state.mode == "gear" then ScheduleRefresh() end

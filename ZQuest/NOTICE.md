@@ -37,6 +37,7 @@ RestedXP name were written by RestedXP and are kept here with credit.
 - Added step history to the guide card with Done / Skipped / Chain missed tags, and made manual step changes stick.
 
 - ZQuest 1.7.0 brings over OpenXP 1.3.60 to 1.3.64 (fixes, the mark-step-done option, quest availability checks, route corrections and the Night Watchman's Torch guide), adapted to ZQuest's reordered routes. OpenXP's Spanish translation and its Thousand Needles reorder are not included.
+- ZQuest 1.7.1 adds a Find button to the guide card (`OpenXPCard.lua`): it targets and marks the NPC or mob of the current step, shows the area it is in, and keeps the player's own location notes. The card also has Quests / Dungeons tabs for the ZDungeon companion addon.
 
 ## Bundled fonts
 

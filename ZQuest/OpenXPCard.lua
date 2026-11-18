@@ -3142,3 +3142,427 @@ do
         C_Timer.NewTicker(1, function() pcall(card.UpdateTabs) end)
     end
 end
+
+---------------------------------------------------------------------------
+-- Find button: always on the card, above its top right corner.
+--
+-- Left click targets whoever the step you're on is about (the quest giver,
+-- the mob to kill) and puts a marker over its head. Under the name is a
+-- short "where": the area the step's waypoint is in, plus a note such as
+-- "down in the crypt". Right click to write your own note for that name;
+-- it is kept for all your characters.
+--
+-- The names come from the step's own target lines when it has them, and
+-- otherwise from the names the guide text shows in colour. Things you click
+-- on (a bookshelf, a crate) can't be targeted: the button says so and the
+-- arrow is the way there.
+--
+-- Targeting needs a protected button, and a protected button fastened to
+-- the card would lock the card in combat. So it floats over the card: it is
+-- placed from the card's position out of combat, and its target list only
+-- changes out of combat.
+---------------------------------------------------------------------------
+do
+    local MAX_NAMES = 5
+    local W_MAX, W_MIN, H = 210, 110, 34
+
+    -- notes for people who are easy to walk past
+    local NOTES = {
+        ["Apothecary Renferrel"] = L("down in the crypt"),
+        ["Dalar Dawnweaver"] = L("down in the crypt"),
+    }
+
+    local function Saved()
+        if type(ZQData) ~= "table" then return nil end
+        ZQData.findNotes = ZQData.findNotes or {}
+        return ZQData.findNotes
+    end
+
+    function card.FindNote(name)
+        if not name then return end
+        local saved = Saved()
+        local own = saved and saved[name]
+        if own == "" then return nil end -- cleared on purpose
+        local api = _G.RXPGuides
+        local shared = api and type(api.FindNotes) == "table" and api.FindNotes[name]
+        return own or shared or NOTES[name]
+    end
+
+    local function Clean(name)
+        if type(name) ~= "string" then return end
+        name = StripCodes(name):gsub("^%s+", ""):gsub("%s+$", "")
+        if name:sub(1, 1) == "*" or name:sub(1, 1) == "+" then name = name:sub(2) end
+        -- these go into a macro: nothing that could add a line or a command
+        if name == "" or #name > 40 or name:find("[\r\n/;%[%]|]") then return end
+        return name
+    end
+
+    local function Hexes(key)
+        local t, seen = {}, {}
+        local gtc = addon.guideTextColors
+        for _, hex in ipairs({gtc and gtc[key], gtc and gtc.default and gtc.default[key], key}) do
+            if type(hex) == "string" and not seen[hex] then
+                seen[hex] = true
+                tinsert(t, hex)
+            end
+        end
+        return t
+    end
+
+    local function Coloured(text, key, out)
+        if type(text) ~= "string" then return end
+        for _, hex in ipairs(Hexes(key)) do
+            for name in text:gmatch("|c" .. hex .. "(.-)|r") do tinsert(out, name) end
+        end
+    end
+
+    -- The steps the card is showing: the step you're on first
+    local function Steps()
+        if card.detour and card.DetourStep then
+            local ok, step = pcall(card.DetourStep)
+            if ok and step then return {step} end
+        end
+        local out, rest = {}, {}
+        local current = CurrentStep()
+        for _, step in ipairs(addon.RXPFrame and addon.RXPFrame.activeSteps or {}) do
+            if step and not step.hidewindow and not step.tip then
+                if card.StepRole and card.StepRole(step, current) == "now" then
+                    tinsert(out, step)
+                else
+                    tinsert(rest, step)
+                end
+            end
+        end
+        for _, step in ipairs(rest) do tinsert(out, step) end
+        return out
+    end
+
+    -- friends, enemies, things that can only be clicked, and where to go
+    function card.FindTargets(steps)
+        local friends, enemies, picks, seen = {}, {}, {}, {}
+        local place
+        local function add(list, raw)
+            local name = Clean(addon.GetCreatureName and type(raw) == "string" and addon.GetCreatureName(raw) or raw)
+            if name and not seen[name:lower()] then
+                seen[name:lower()] = true
+                tinsert(list, name)
+            end
+        end
+        for _, step in ipairs(steps or Steps()) do
+            for _, e in ipairs(step.elements or {}) do
+                if not e.completed then
+                    for _, n in ipairs(e.targets or {}) do add(friends, n) end
+                    for _, n in ipairs(e.mobs or {}) do add(enemies, n) end
+                    for _, n in ipairs(e.unitscan or {}) do add(enemies, n) end
+                    if not place and e.tag == "goto" and e.zone and e.x and e.y then place = e end
+                end
+            end
+            -- then the names the text shows in colour
+            for _, e in ipairs(step.elements or {}) do
+                if not e.completed then
+                    for _, text in ipairs({e.text, e.rawtext}) do
+                        local f, en, p = {}, {}, {}
+                        Coloured(text, "RXP_FRIENDLY_", f)
+                        Coloured(text, "RXP_ENEMY_", en)
+                        Coloured(text, "RXP_PICK_", p)
+                        for _, n in ipairs(f) do add(friends, n) end
+                        for _, n in ipairs(en) do add(enemies, n) end
+                        for _, n in ipairs(p) do add(picks, n) end
+                    end
+                end
+            end
+            -- only the step you're on, unless it names nobody
+            if #friends + #enemies + #picks > 0 then break end
+        end
+        return friends, enemies, picks, place
+    end
+
+    -- "/targetexact" each name (the last one in range wins, so the quest
+    -- giver goes last), then a marker: star for a friend, skull for a mob
+    function card.FindMacro(friends, enemies)
+        local lines, n = {"/cleartarget"}, 0
+        local function push(list)
+            for _, name in ipairs(list) do
+                if n < MAX_NAMES then
+                    n = n + 1
+                    tinsert(lines, "/targetexact " .. name)
+                end
+            end
+        end
+        push(enemies)
+        push(friends)
+        if n == 0 then return "" end
+        local forever = addon.game == "FOREVER"
+        tinsert(lines, "/tm " .. (forever and "!" or "~") .. (#friends > 0 and 1 or 8))
+        local text = table.concat(lines, "\n")
+        while #text > 255 and #lines > 3 do
+            table.remove(lines, 2)
+            text = table.concat(lines, "\n")
+        end
+        return text
+    end
+
+    -- The name of the area a waypoint is in ("The Sepulcher"). The client
+    -- only knows it for parts of the map you've explored.
+    local areaCache = {}
+    local function AreaName(place)
+        if not place then return end
+        local key = fmt("%s:%.1f:%.1f", tostring(place.zone), place.x, place.y)
+        if areaCache[key] ~= nil then return areaCache[key] or nil end
+        local name
+        pcall(function()
+            if C_MapExplorationInfo and C_MapExplorationInfo.GetExploredAreaIDsAtPosition and CreateVector2D then
+                local ids = C_MapExplorationInfo.GetExploredAreaIDsAtPosition(place.zone,
+                    CreateVector2D(place.x / 100, place.y / 100))
+                local id = ids and ids[1]
+                if id and C_Map.GetAreaInfo then name = C_Map.GetAreaInfo(id) end
+            end
+            if not name and C_Map and C_Map.GetMapInfo then
+                local info = C_Map.GetMapInfo(place.zone)
+                name = info and info.name
+            end
+        end)
+        if not (type(name) == "string" and name ~= "") then name = false end
+        areaCache[key] = name
+        return name or nil
+    end
+
+    function card.FindWhere(name, place)
+        local area, note = AreaName(place), card.FindNote(name)
+        if area and note then return area .. ", " .. note end
+        return area or note
+    end
+
+    local btn = CreateFrame("Button", "ZQuestFindButton", UIParent, "SecureActionButtonTemplate")
+    btn:SetSize(W_MAX, H)
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetAttribute("type1", "macro")
+    btn:SetAttribute("macrotext1", "")
+    if btn.RegisterForClicks then btn:RegisterForClicks("AnyUp", "AnyDown") end
+    btn:Hide()
+    card.findButton = btn
+
+    btn.bg = btn:CreateTexture(nil, "BACKGROUND")
+    btn.bg:SetAllPoints()
+    btn.bg:SetColorTexture(C.bg[1], C.bg[2], C.bg[3], 0.92)
+    local function Edge(p1, p2, w, h)
+        local t = btn:CreateTexture(nil, "BORDER")
+        t:SetColorTexture(C.blue[1], C.blue[2], C.blue[3], 0.75)
+        t:SetPoint(p1)
+        t:SetPoint(p2)
+        if w then t:SetWidth(w) else t:SetHeight(h) end
+        return t
+    end
+    btn.edges = {Edge("TOPLEFT", "TOPRIGHT", nil, 1), Edge("BOTTOMLEFT", "BOTTOMRIGHT", nil, 1),
+                 Edge("TOPLEFT", "BOTTOMLEFT", 1), Edge("TOPRIGHT", "BOTTOMRIGHT", 1)}
+    btn.hl = btn:CreateTexture(nil, "HIGHLIGHT")
+    btn.hl:SetAllPoints()
+    btn.hl:SetColorTexture(1, 1, 1, 0.08)
+    btn.icon = btn:CreateTexture(nil, "ARTWORK")
+    btn.icon:SetTexture(TEX .. "target")
+    btn.icon:SetSize(16, 16)
+    btn.icon:SetPoint("LEFT", 8, 0)
+    btn.name = btn:CreateFontString(nil, "OVERLAY")
+    FixedFont(btn.name, 12, "")
+    btn.name:SetPoint("TOPLEFT", 30, -4)
+    btn.name:SetPoint("RIGHT", -6, 0)
+    btn.name:SetJustifyH("LEFT")
+    if btn.name.SetWordWrap then btn.name:SetWordWrap(false) end
+    btn.where = btn:CreateFontString(nil, "OVERLAY")
+    FixedFont(btn.where, 10, "")
+    btn.where:SetPoint("BOTTOMLEFT", 30, 5)
+    btn.where:SetPoint("RIGHT", -6, 0)
+    btn.where:SetJustifyH("LEFT")
+    if btn.where.SetWordWrap then btn.where:SetWordWrap(false) end
+
+    local state = {sig = nil, names = {}, first = nil, picks = {}, flash = 0}
+
+    local function Paint()
+        local now = GetTime and GetTime() or 0
+        if state.flash > now then return end
+        local n = #state.names
+        if n > 0 then
+            Tint(btn.icon, {159 / 255, 212 / 255, 1})
+            btn.name:SetTextColor(unpack(C.text))
+            btn.name:SetText(state.first .. (n > 1 and fmt(" +%d", n - 1) or ""))
+            btn.where:SetTextColor(unpack(C.dim))
+            btn.where:SetText(state.where or L("Click to find and mark"))
+        else
+            Tint(btn.icon, C.faint)
+            btn.name:SetTextColor(unpack(C.dim))
+            if state.picks[1] then
+                btn.name:SetText(state.picks[1])
+                btn.where:SetText(state.where and fmt(L("%s. Can't be targeted"), state.where)
+                                      or L("Can't be targeted: follow the arrow"))
+            else
+                btn.name:SetText(L("Nobody to find here"))
+                btn.where:SetText(state.where or L("Follow the arrow"))
+            end
+            btn.where:SetTextColor(unpack(C.faint))
+        end
+    end
+
+    local function Flash(text, color)
+        state.flash = 0
+        Paint()
+        btn.where:SetText(text)
+        btn.where:SetTextColor(color[1], color[2], color[3])
+        state.flash = (GetTime and GetTime() or 0) + 3
+    end
+
+    local function Locked() return InCombatLockdown and InCombatLockdown() end
+
+    function card.UpdateFind()
+        if Locked() then return end
+        local shown = f:IsShown()
+        if not shown then
+            if btn:IsShown() then btn:Hide() end
+            return
+        end
+
+        local friends, enemies, picks, place = card.FindTargets()
+        local macro = card.FindMacro(friends, enemies)
+        local names = {}
+        for _, n in ipairs(friends) do tinsert(names, n) end
+        for _, n in ipairs(enemies) do tinsert(names, n) end
+        local first = names[1] or picks[1]
+        local where = card.FindWhere(first, place)
+        local sig = macro .. "\031" .. (first or "") .. "\031" .. (where or "")
+        if sig ~= state.sig then
+            state.sig, state.names, state.first, state.picks, state.where = sig, names, names[1], picks, where
+            state.friends, state.enemies = friends, enemies
+            btn:SetAttribute("macrotext1", macro)
+            state.flash = 0
+            Paint()
+        end
+
+        -- sit on the card's top right corner, beside the tabs
+        local scale, cardScale = btn:GetEffectiveScale(), f:GetEffectiveScale()
+        local right, top = f:GetRight(), f:GetTop()
+        if not (right and top and scale and scale > 0) then return end
+        if btn:GetScale() ~= f:GetScale() then
+            btn:SetScale(f:GetScale())
+            scale = btn:GetEffectiveScale()
+        end
+        local tabs = card.tabs and card.tabs:IsShown() and 178 or 0
+        local w = math.min(W_MAX, f:GetWidth() - tabs)
+        local lift = 0
+        if w < W_MIN then -- narrow card: go above the tabs
+            w, lift = math.min(W_MAX, math.max(W_MIN, f:GetWidth())), 21
+        end
+        local x = math.floor(right * cardScale / scale + 0.5)
+        local y = math.floor(top * cardScale / scale + 0.5) + lift
+        if x ~= state.x or y ~= state.y or w ~= state.w then
+            state.x, state.y, state.w = x, y, w
+            btn:SetWidth(w)
+            btn:ClearAllPoints()
+            btn:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", x, y)
+        end
+        btn:SetFrameLevel((f:GetFrameLevel() or 1) + 20)
+        if not btn:IsShown() then btn:Show() end
+        Paint()
+    end
+
+    -- your own note for a name
+    local editor
+    local function EditNote(name)
+        if not name then return end
+        if not editor then
+            editor = CreateFrame("Frame", "ZQuestFindNote", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+            editor:SetSize(300, 96)
+            editor:SetFrameStrata("DIALOG")
+            if editor.SetBackdrop then
+                editor:SetBackdrop({bgFile = WHITE, edgeFile = WHITE, edgeSize = 1,
+                                    insets = {left = 1, right = 1, top = 1, bottom = 1}})
+                editor:SetBackdropColor(C.bg[1], C.bg[2], C.bg[3], 0.97)
+                editor:SetBackdropBorderColor(unpack(C.border))
+            end
+            editor.title = editor:CreateFontString(nil, "OVERLAY")
+            FixedFont(editor.title, 12, "")
+            editor.title:SetPoint("TOPLEFT", 12, -10)
+            editor.title:SetPoint("RIGHT", -12, 0)
+            editor.title:SetJustifyH("LEFT")
+            editor.box = CreateFrame("EditBox", nil, editor, "InputBoxTemplate")
+            editor.box:SetSize(270, 22)
+            editor.box:SetPoint("TOPLEFT", 16, -34)
+            editor.box:SetAutoFocus(true)
+            editor.box:SetMaxLetters(60)
+            local function Save()
+                local saved = Saved()
+                if saved and editor.who then
+                    local text = (editor.box:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                    saved[editor.who] = text
+                    state.sig = nil
+                end
+                editor:Hide()
+                pcall(card.UpdateFind)
+            end
+            editor.box:SetScript("OnEnterPressed", Save)
+            editor.box:SetScript("OnEscapePressed", function() editor:Hide() end)
+            editor.save = MakeButton(editor, "check", L("Save this note"), Save, L("Save"))
+            editor.save:SetPoint("BOTTOMRIGHT", -10, 8)
+            editor.cancel = MakeButton(editor, "cross", L("Close without saving"), function() editor:Hide() end)
+            editor.cancel:SetPoint("RIGHT", editor.save, "LEFT", -4, 0)
+            editor:Hide()
+        end
+        editor.who = name
+        editor.title:SetText(fmt(L("Where is %s? (for example: down in the crypt)"), name))
+        editor.box:SetText(card.FindNote(name) or "")
+        editor:ClearAllPoints()
+        editor:SetPoint("BOTTOM", btn, "TOP", 0, 6)
+        editor:Show()
+    end
+
+    btn:SetScript("PostClick", function(_, button, down)
+        if down then return end
+        if button == "RightButton" then
+            EditNote(state.first or state.picks[1])
+            return
+        end
+        if #state.names == 0 then return end
+        local function Check()
+            local found
+            if UnitExists and UnitExists("target") then
+                local name = addon.GetUnitName and addon.GetUnitName("target") or UnitName("target")
+                if name and not (addon.IsSecretValue and addon.IsSecretValue(name)) then found = name else found = true end
+            end
+            if found then
+                Flash(type(found) == "string" and fmt(L("Found and marked: %s"), found) or L("Found and marked"), C.green)
+            else
+                Flash(L("Not in range yet: follow the arrow"), C.orange)
+            end
+        end
+        if C_Timer and C_Timer.After then C_Timer.After(0.1, Check) else Check() end
+    end)
+
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        if #state.names > 0 then
+            GameTooltip:SetText(L("Find and mark"), 1, 1, 1)
+            for _, n in ipairs(state.names) do
+                local note = card.FindNote(n)
+                GameTooltip:AddLine(note and (n .. " (" .. note .. ")") or n, C.blue[1], C.blue[2], C.blue[3])
+            end
+            GameTooltip:AddLine(L("Click: target the one in range and put a marker over its head."), 0.8, 0.8, 0.8, true)
+        elseif state.picks[1] then
+            GameTooltip:SetText(state.picks[1], 1, 1, 1)
+            GameTooltip:AddLine(L("This is something you click on, so it can't be targeted. The arrow takes you to it."),
+                                0.8, 0.8, 0.8, true)
+        else
+            GameTooltip:SetText(L("Nobody to find on this step"), 1, 1, 1)
+        end
+        if state.first or state.picks[1] then
+            GameTooltip:AddLine(L("Right click: write your own note on where this is."), 0.6, 0.6, 0.6, true)
+        end
+        if Locked() then GameTooltip:AddLine(L("In combat: this updates when the fight ends."), 1, 0.5, 0.3, true) end
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    if C_Timer and C_Timer.NewTicker then
+        C_Timer.NewTicker(0.25, function() pcall(card.UpdateFind) end)
+    end
+    local regen = CreateFrame("Frame")
+    regen:RegisterEvent("PLAYER_REGEN_ENABLED")
+    regen:SetScript("OnEvent", function() pcall(card.UpdateFind) end)
+end

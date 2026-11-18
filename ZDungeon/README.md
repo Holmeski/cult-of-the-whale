@@ -50,6 +50,11 @@ Travel times need ZQuest.
 
 The gear list needs DungeonJournal. Upgrade numbers need Forever Leveling BiS.
 
+### Quest sharing
+- A **Quest sharing** window lists the dungeon quests you are missing that a party member could share with you, and the ones in your log that you can share.
+- **Ask the party in chat** posts both lists in party chat: what you are missing, what you can share, and whether everyone has them.
+- **Share mine with the party** offers each of your shareable dungeon quests to the group.
+
 ### Before you leave
 - At the dungeon door, a warning listing quests you could have picked up but have not.
 - Inside, a small tracker with the quest items and kills you still need, with counts.
@@ -63,6 +68,7 @@ The gear list needs DungeonJournal. Upgrade numbers need Forever Leveling BiS.
 | `/zd` | Open or close the window |
 | `/zd next` | Where do I go next? |
 | `/zd guide` | Open your dungeon guide (or pick a dungeon if you have none) |
+| `/zd share` | Open quest sharing |
 | `/zd check` | Print the missing-quest checklist for the current dungeon |
 | `/zd tracker` | Turn the in-dungeon tracker off or on |
 

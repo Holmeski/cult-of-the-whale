@@ -30,7 +30,7 @@ local state = {dungeon = nil, sortKey = "xp", sortDesc = true, offset = 0, selec
 
 -- set further down; declared here so the window and the tracker can call them
 local StartPlan, OpenNext, UpdateCard, card
-local ZQuestApi, OpenDungeonTab
+local ZQuestApi, OpenDungeonTab, OpenShare
 local plan -- the dungeon guide in progress: {key, ids, chain, order, arrived}
 
 local function Secret(v)
@@ -583,6 +583,11 @@ local function CreateTracker()
         f.closedFor = run.dungeon or preview
         f:Hide()
     end)
+    f.share = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    f.share:SetSize(130, 20)
+    f.share:SetPoint("BOTTOMLEFT", 8, 6)
+    f.share:SetText("Quest sharing")
+    f.share:SetScript("OnClick", function() OpenShare() end)
     f.body = Text(f, "GameFontHighlightSmall")
     f.body:SetPoint("TOPLEFT", 8, -24)
     f.body:SetWidth(274)
@@ -610,7 +615,7 @@ local function UpdateTracker()
     tracker.title:SetText("ZDungeon: " .. d.name)
     tracker.body:SetText(text)
     local h = tracker.body.GetStringHeight and tracker.body:GetStringHeight()
-    tracker:SetHeight((type(h) == "number" and h or 100) + 34)
+    tracker:SetHeight((type(h) == "number" and h or 100) + 58)
     tracker:Show()
 end
 
@@ -621,9 +626,10 @@ local function Checklist(d, where)
         Alert(("%s: you are missing %d quest%s you could have picked up."):format(d.name, miss, miss == 1 and "" or "s"))
         for _, e in ipairs(n.outside) do
             local p = e.q.start
-            Say(("   %s - from %s%s. A party member may be able to share it."):format(e.q.name, p and p.n or "?",
+            Say(("   %s - from %s%s."):format(e.q.name, p and p.n or "?",
                 p and p.m and (" in " .. (ZoneName(p.m) or "?")) or ""))
         end
+        Say("   A party member may be able to share them: type /zd share to ask the group.")
     elseif where == "manual" then
         Say(d.name .. ": no quests left to pick up outside.")
     end
@@ -1154,6 +1160,11 @@ local function CreateWindow()
     nextButton:SetPoint("TOPRIGHT", -278, -9)
     nextButton:SetText("Where do I go next?")
     nextButton:SetScript("OnClick", function() OpenNext() end)
+    local shareButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    shareButton:SetSize(104, 22)
+    shareButton:SetPoint("TOPRIGHT", -432, -9)
+    shareButton:SetText("Quest sharing")
+    shareButton:SetScript("OnClick", function() OpenShare() end)
 
     -- Dungeon list -----------------------------------------------------
     f.dungeonButtons = {}
@@ -1818,6 +1829,8 @@ SlashCmdList["ZDUNGEON"] = function(input)
         UpdateTracker()
     elseif input == "next" then
         OpenNext()
+    elseif input == "share" then
+        OpenShare()
     elseif (input == "guide" or input == "plan") and ZQuestApi() and not plan then
         local d = run.dungeon or preview
         if d then StartPlan(d) else OpenDungeonTab() end
@@ -2658,6 +2671,194 @@ local function OnLevelUp(level)
 end
 
 -- ---------------------------------------------------------------------------
+-- Quest sharing: who is missing what, and asking the party
+-- ---------------------------------------------------------------------------
+
+local shareFrame
+
+-- The dungeon this is about: the one you are in or standing at, else the one
+-- your dungeon guide is for, else the one open in the window.
+local function ShareDungeon()
+    if run.dungeon or preview then return run.dungeon or preview end
+    local last = ZDungeonDB and ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
+    local d = last and last.key and DungeonByKey(last.key)
+    if d then return d end
+    if plan then return DungeonByKey(plan.key) end
+    return state.dungeon
+end
+
+local function Pushable(id)
+    if C_QuestLog and C_QuestLog.IsPushableQuest then
+        local ok, yes = pcall(C_QuestLog.IsPushableQuest, id)
+        if ok and not Secret(yes) then return yes and true or false end
+    end
+    local q = ns.quests[id]
+    return q and q.share or false
+end
+
+-- missing: quests you could take now and don't have (a party member could share them)
+-- have: quests in your log that you can share
+local function ShareInfo(d)
+    logCache = nil
+    local missing, have = {}, {}
+    for _, id in ipairs(d.quests) do
+        local q = ns.quests[id]
+        if q and ForMySide(q) and ForMyClass(q) then
+            local st = Status(id)
+            if st == "ready" and not (q.start and q.start.k == "item") then
+                tinsert(missing, {id = id, name = q.name, sure = q.share and true or false})
+            elseif st == "log" and Pushable(id) then
+                tinsert(have, {id = id, name = q.name})
+            end
+        end
+    end
+    return missing, have
+end
+
+local function PartyChannel()
+    if not (IsInGroup and IsInGroup()) then return nil end
+    if LE_PARTY_CATEGORY_INSTANCE and IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
+    if IsInRaid and IsInRaid() then return "RAID" end
+    return "PARTY"
+end
+
+-- Say a list in party chat, split so no line is too long for chat.
+local function PartyList(channel, lead, names, tail)
+    local line = lead
+    local first = true
+    for _, name in ipairs(names) do
+        local piece = (first and "" or ", ") .. name
+        if #line + #piece + #tail > 240 and not first then
+            SendChatMessage(line, channel)
+            line, piece = "... " .. name, ""
+        end
+        line = line .. piece
+        first = false
+    end
+    SendChatMessage(line .. tail, channel)
+end
+
+local function AskParty()
+    local d = ShareDungeon()
+    if not d then Say("pick a dungeon in /zd first.") return end
+    local missing, have = ShareInfo(d)
+    local channel = PartyChannel()
+    if not channel then
+        Say("you are not in a group, so there is nobody to ask.")
+        return
+    end
+    if #missing == 0 and #have == 0 then
+        SendChatMessage(("%s quests: I have nothing to share and nothing missing. Does everyone have theirs?"):format(d.name), channel)
+        return
+    end
+    if #missing > 0 then
+        local names = {}
+        for _, m in ipairs(missing) do tinsert(names, m.name) end
+        PartyList(channel, ("%s - I'm missing: "):format(d.name), names, ". Can anyone share?")
+    end
+    if #have > 0 then
+        local names = {}
+        for _, h in ipairs(have) do tinsert(names, h.name) end
+        PartyList(channel, ("%s - I can share: "):format(d.name), names, ". Does everyone have them?")
+    end
+end
+
+-- Offer every shareable dungeon quest in your log to the party, one at a time.
+local function ShareMine()
+    local d = ShareDungeon()
+    if not d then return end
+    if not PartyChannel() then Say("you are not in a group.") return end
+    local _, have = ShareInfo(d)
+    if #have == 0 then Say("none of your " .. d.name .. " quests can be shared.") return end
+    for i, h in ipairs(have) do
+        C_Timer.After((i - 1) * 0.6, function()
+            logCache = nil
+            local index = QuestLog()[h.id]
+            if not index then return end
+            if C_QuestLog and C_QuestLog.SetSelectedQuest then
+                pcall(C_QuestLog.SetSelectedQuest, h.id)
+            elseif SelectQuestLogEntry then
+                pcall(SelectQuestLogEntry, index)
+            end
+            if QuestLogPushQuest then pcall(QuestLogPushQuest) end
+        end)
+    end
+    Say(("offering %d quest%s to the party: %s."):format(#have, #have == 1 and "" or "s", have[1].name .. (#have > 1 and " and more" or "")))
+end
+
+local function ShareText(d)
+    local missing, have = ShareInfo(d)
+    local L = {}
+    tinsert(L, "|cffffd100You are missing|r  |cff808080(quests you could take right now)|r")
+    if #missing == 0 then tinsert(L, "   Nothing. You have everything you can take.") end
+    for _, m in ipairs(missing) do
+        tinsert(L, "   " .. m.name .. (m.sure and "" or "  |cff808080(new in Forever: sharing not confirmed)|r"))
+    end
+    tinsert(L, "")
+    tinsert(L, "|cffffd100You can share|r  |cff808080(in your log)|r")
+    if #have == 0 then tinsert(L, "   Nothing shareable in your log for this dungeon.") end
+    for _, h in ipairs(have) do tinsert(L, "   " .. h.name) end
+    tinsert(L, "")
+    tinsert(L, "|cff808080Quests that start from a dropped item, or sit behind a chain you haven't done, can't be shared to you and are left out.|r")
+    return concat(L, "\n"), #missing, #have
+end
+
+local function RefreshShare()
+    if not shareFrame or not shareFrame:IsShown() then return end
+    local d = ShareDungeon()
+    if not d then
+        shareFrame.title:SetText("Quest sharing")
+        shareFrame.body:SetText("Pick a dungeon in /zd first.")
+        return
+    end
+    shareFrame.title:SetText("Quest sharing: " .. d.name)
+    local text = ShareText(d)
+    shareFrame.body:SetText(text)
+    local h = shareFrame.body.GetStringHeight and shareFrame.body:GetStringHeight()
+    shareFrame:SetHeight((type(h) == "number" and h or 140) + 84)
+end
+
+OpenShare = function()
+    if not shareFrame then
+        local f = CreateFrame("Frame", "ZDungeonShare", UIParent, Backdrop)
+        f:SetSize(420, 240)
+        f:SetPoint("CENTER", 0, 40)
+        f:SetFrameStrata("DIALOG")
+        f:SetMovable(true)
+        f:EnableMouse(true)
+        f:SetClampedToScreen(true)
+        f:RegisterForDrag("LeftButton")
+        f:SetScript("OnDragStart", f.StartMoving)
+        f:SetScript("OnDragStop", f.StopMovingOrSizing)
+        SetBackdrop(f)
+        if UISpecialFrames then tinsert(UISpecialFrames, "ZDungeonShare") end
+        f.title = Text(f, "GameFontNormalLarge")
+        f.title:SetPoint("TOPLEFT", 14, -12)
+        local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", 2, 2)
+        f.body = Text(f, "GameFontHighlightSmall")
+        f.body:SetPoint("TOPLEFT", 14, -40)
+        f.body:SetWidth(392)
+        f.body:SetJustifyV("TOP")
+        if f.body.SetWordWrap then f.body:SetWordWrap(true) end
+        if f.body.SetSpacing then f.body:SetSpacing(3) end
+        f.ask = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        f.ask:SetSize(190, 24)
+        f.ask:SetPoint("BOTTOMLEFT", 12, 10)
+        f.ask:SetText("Ask the party in chat")
+        f.ask:SetScript("OnClick", function() AskParty() end)
+        f.give = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        f.give:SetSize(190, 24)
+        f.give:SetPoint("BOTTOMRIGHT", -12, 10)
+        f.give:SetText("Share mine with the party")
+        f.give:SetScript("OnClick", function() ShareMine() end)
+        shareFrame = f
+    end
+    shareFrame:Show()
+    RefreshShare()
+end
+
+-- ---------------------------------------------------------------------------
 -- Events
 -- ---------------------------------------------------------------------------
 
@@ -2672,6 +2873,7 @@ ScheduleRefresh = function()
         UpdateCard()
         UpdateTracker()
         if nextFrame and nextFrame:IsShown() then RefreshNext() end
+        RefreshShare()
     end)
 end
 

@@ -278,6 +278,7 @@ def record(qid):
         "preAll": [p for p in q.preGroup if isinstance(p, int)],
         "preAny": [p for p in q.preSingle if isinstance(p, int)],
         "skill": bool(q.reqSkill), "rep": bool(q.reqRep), "repeat": bool(q.specialFlags & 1),
+        "share": bool((li(row, 23) or 0) & 8),
         "no": sum(len(as_list(li(q.objectives or {}, i))) for i in (1, 2, 3, 5)) if isinstance(q.objectives, (dict, list)) else 0,
         "text": text or "",
     }
@@ -349,6 +350,8 @@ for qid in sorted(QUESTS):
         f.append("preAny={%s}" % ",".join(map(str, r["preAny"])))
     if r["no"]:
         f.append("no=%d" % r["no"])
+    if r["share"]:
+        f.append("share=true")
     for k in ("skill", "rep"):
         if r[k]:
             f.append(k + "=true")

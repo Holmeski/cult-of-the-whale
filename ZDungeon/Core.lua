@@ -2310,6 +2310,44 @@ local function BuildGuideText(d)
         end
     end
 
+    -- When each quest on the list can be done:
+    --   early[id]  needs nothing inside: a link in a chain (take it from one
+    --              person, hand it to another), or everything it asks for is
+    --              out in the world. Taken, done and handed in before the run
+    --   waits[id]  needs another quest handed in first that itself needs
+    --              the dungeon, so it only opens up after this run
+    local early, waits, waiting = {}, {}, {}
+    for _, id in ipairs(ids) do
+        local q = ns.quests[id]
+        local st, fin = q.start, q.finish
+        if st and fin and st.k ~= "item" and not st.inside and st.m and not fin.inside and fin.m then
+            local no, out = q.no or 0, 0
+            for _, g in ipairs(q.goals or {}) do
+                if g.m and g.x and g.y and not g.both then out = out + 1 end
+            end
+            if (no == 0 and st.n ~= fin.n) or (no > 0 and out >= no) then early[id] = true end
+        end
+    end
+    local function blockedByRun(id)
+        for _, c in ipairs(Chain(id)) do
+            if waits[c] or (isQuest[c] and not early[c]) then return true end
+        end
+    end
+    local changed = true
+    while changed do
+        changed = false
+        for _, list in ipairs({ids, chain}) do
+            for _, id in ipairs(list) do
+                if not waits[id] and blockedByRun(id) then
+                    waits[id] = true
+                    early[id] = nil
+                    if isQuest[id] then tinsert(waiting, ns.quests[id].name) end
+                    changed = true
+                end
+            end
+        end
+    end
+
     -- "Target this" lines: ZQuest's target buttons pick these names up
     local function unit_(tag, n)
         n = n and GuideLine(n)
@@ -2365,7 +2403,7 @@ local function BuildGuideText(d)
 
     for _, id in ipairs(chain) do
         local q = ns.quests[id]
-        if q and not isQuest[id] then
+        if q and not isQuest[id] and not waits[id] then
             local needs = {}
             for _, c in ipairs(Chain(id)) do tinsert(needs, "T" .. c) end
             local p = q.start
@@ -2384,18 +2422,21 @@ local function BuildGuideText(d)
     for _, id in ipairs(ids) do
         local q = ns.quests[id]
         local p = q.start
-        if p and not p.inside and p.k ~= "item" then
+        if p and not p.inside and p.k ~= "item" and not waits[id] then
             local needs = {}
-            for _, c in ipairs(Chain(id)) do
-                -- a chain quest is handed in first; another dungeon quest only has to be taken first
-                tinsert(needs, (isQuest[c] and "A" or "T") .. c)
-            end
+            -- whatever comes before it is handed in first
+            for _, c in ipairs(Chain(id)) do tinsert(needs, "T" .. c) end
             errand("A", id, usable(p) and p or nil, needs)
             local gs, g = 0, nil
             for _, x in ipairs(q.goals or {}) do
                 if x.m and x.x and x.y and not x.both then gs = gs + 1 g = g or x end
             end
-            if g and gs >= (q.no or 0) then errand("D", id, g, {"A" .. id}) end
+            local last = "A" .. id
+            if g and gs >= (q.no or 0) then
+                errand("D", id, g, {last})
+                last = "D" .. id
+            end
+            if early[id] then errand("T", id, usable(q.finish) and q.finish or nil, {last}) end
         end
     end
 
@@ -2474,7 +2515,7 @@ local function BuildGuideText(d)
             sent[e.id] = goalStep(e.id, q)
             talkKey = nil
         elseif e.kind == "D" then
-            if goalStep(e.id, q, true) then outside[e.id] = true end
+            if goalStep(e.id, q, true) then outside[e.id], sent[e.id] = true, true end
             talkKey = nil
         else
             local p = e.place
@@ -2514,10 +2555,10 @@ local function BuildGuideText(d)
     for _, id in ipairs(ids) do
         local q = ns.quests[id]
         local p = q.start
-        if p and (p.inside or p.k == "item") then
+        if p and (p.inside or p.k == "item") and not waits[id] then
             tinsert(inside, ("%s (%s)"):format(q.name, p.k == "item" and ("drops from " .. (p.from or "?")) or p.n))
         end
-        if not outside[id] then
+        if not outside[id] and not waits[id] and not early[id] then
             for i = 1, (q.no or 0) do tinsert(objectives, ("    .complete -%d,%d"):format(id, i)) end
         end
     end
@@ -2533,7 +2574,7 @@ local function BuildGuideText(d)
     for _, id in ipairs(ids) do
         local q = ns.quests[id]
         local p = q.finish or q.start
-        if p then
+        if p and not waits[id] and not early[id] then
             local k = PlaceKey(p)
             if not tgroups[k] then tgroups[k] = {place = p, ids = {}} tinsert(torder, k) end
             tinsert(tgroups[k].ids, id)
@@ -2572,6 +2613,17 @@ local function BuildGuideText(d)
         end
     end
 
+    if #waiting > 0 then
+        local names, seenName = {}, {}
+        for _, n in ipairs(waiting) do
+            if not seenName[n] then seenName[n] = true tinsert(names, n) end
+        end
+        local shown = {}
+        for i = 1, min(#names, 5) do shown[i] = names[i] end
+        add("step")
+        add("    >>Next visit: " .. GuideLine(concat(shown, ", ")) .. (#names > 5 and (", and %d more"):format(#names - 5) or "")
+            .. ". These open up once this run's quests are handed in. Start this dungeon's guide again for them")
+    end
     if #later > 0 then
         sort(later, function(a, b) return a.level < b.level end)
         local names = {}
@@ -2587,7 +2639,7 @@ end
 
 -- Goes up whenever the guide writer changes what a guide says, so a guide
 -- saved by an older version is written again instead of loaded as it was.
-local GUIDE_REV = 3
+local GUIDE_REV = 4
 local staleGuideWasUp = false
 
 local function RememberGuide(d, name, text)
@@ -3118,7 +3170,8 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
             -- hand ZQuest the Dungeons tab, and the guide that was up before the reload
             local zq = _G.RXPGuides
             if zq then
-                zq.DungeonTab = {group = ZQ_GROUP, Open = function() OpenDungeonTab() end}
+                zq.DungeonTab = {group = ZQ_GROUP, Open = function() OpenDungeonTab() end,
+                                 Pick = function() OpenNext() end}
                 -- quest XP for ZQuest's card: what it pays you now, whether
                 -- that is an estimate, and the full amount when known
                 zq.QuestXP = function(id)

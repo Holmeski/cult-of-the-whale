@@ -14,6 +14,13 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.6",
+        date = "November 2026",
+        changes = {
+            "On the Dungeons tab, the tab now reads Change dungeon. Click it to pick a different dungeon for your level",
+        },
+    },
+    {
         version = "1.7.5",
         date = "November 2026",
         changes = {

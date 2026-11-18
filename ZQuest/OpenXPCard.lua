@@ -3330,9 +3330,28 @@ do
             addon.smartStart.Run()
         end
     end)
+    -- On the Dungeons tab already, the same tab reads "Change dungeon" and
+    -- opens the provider's dungeon chooser (Pick) instead.
     local dungeonTab = MakeTab(L("Dungeons"), 88, L("Dungeon guides and where to go next"), function()
         local p = Provider()
-        if p and p.Open then pcall(p.Open) end
+        if not p then return end
+        local g = addon.currentGuide
+        if g and g.group == p.group and p.Pick then
+            pcall(p.Pick)
+        elseif p.Open then
+            pcall(p.Open)
+        end
+    end)
+    dungeonTab:SetScript("OnEnter", function(self)
+        local p, g = Provider(), addon.currentGuide
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        if p and g and g.group == p.group and p.Pick then
+            GameTooltip:SetText(L("Pick a different dungeon"), 1, 1, 1)
+            GameTooltip:AddLine(L("Shows the dungeons for your level. Press Start guide on the one you want."), 0.8, 0.8, 0.8, true)
+        else
+            GameTooltip:SetText(L("Dungeon guides and where to go next"), 1, 1, 1)
+        end
+        GameTooltip:Show()
     end)
 
     function card.UpdateTabs()
@@ -3349,6 +3368,7 @@ do
         end
         Style(questTab, not onDungeon)
         Style(dungeonTab, onDungeon)
+        dungeonTab.label:SetText((onDungeon and p.Pick) and L("Change dungeon") or L("Dungeons"))
         tabs:Show()
     end
 

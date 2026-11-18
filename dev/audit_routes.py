@@ -8,6 +8,7 @@ offline harness and reports:
   - harness crashes and guide lines ZQuest could not parse
   - a hand-in placed before its pickup
   - pickups / hand-ins with no location (no .goto in the step)
+  - a follow-up quest picked up before the quest it needs is handed in
   - routes that come back to a map they already left (extra trips)
   - how many quests each guide covers (to spot data changes between runs)
 
@@ -22,6 +23,16 @@ SIDES = (("Horde", "MAGE"), ("Alliance", "MAGE"))
 LINE = re.compile(r'^(\.goto \d+,[\d.]+,[\d.]+(,\d+ >>.+)?|>>.+|\.(accept|turnin) -?\d+ >>.+|\.complete -?\d+,\d+|\.(target|mob) [^,>|]+)$')
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.dirname(here)
+
+# prerequisites from ZDungeon's data: quest -> (all of these first, any one of these first)
+PRE = {}
+for m in re.finditer(r'^\[(\d+)\]=\{(.*)$', open(os.path.join(root, "ZDungeon", "Data.lua"), encoding="utf-8").read(), re.M):
+    both = []
+    for key in ("preAll", "preAny"):
+        g = re.search(key + r'=\{([\d,]+)\}', m.group(2))
+        both.append([int(x) for x in g.group(1).split(",") if x] if g else [])
+    if both[0] or both[1]:
+        PRE[int(m.group(1))] = both
 
 report = {"problems": [], "guides": {}, "runs": 0}
 def problem(kind, where, detail):
@@ -70,6 +81,18 @@ for side, cls in SIDES:
             for q, t in trn.items():
                 if q in acc and acc[q] > t:
                     problem("hand-in before pickup", where, "quest %d" % q)
+            # a follow-up quest picked up before the quest it needs is handed
+            # in (when that earlier quest is in this guide too)
+            follow = 0
+            for q, a in acc.items():
+                need_all, need_any = PRE.get(q, ([], []))
+                late = [pq for pq in need_all if (pq in acc or pq in trn) and trn.get(pq, 10 ** 9) > a]
+                in_guide = [pq for pq in need_any if pq in acc or pq in trn]
+                if in_guide and not any(trn.get(pq, 10 ** 9) <= a for pq in in_guide):
+                    late.append(in_guide[0])
+                for pq in late:
+                    follow += 1
+                    problem("follow-up too early", where, "quest %d is picked up before %d is handed in" % (q, pq))
             # trips: runs of consecutive steps on the same map, before the dungeon
             pre = []
             for st in steps:
@@ -79,7 +102,7 @@ for side, cls in SIDES:
                     pre.append(st["map"])
             extra = len(pre) - len(set(pre))
             report["guides"]["%s|%s" % (name, side)] = {"steps": len(steps), "quests": len(quests), "trips": len(pre),
-                                                        "extraTrips": extra}
+                                                        "extraTrips": extra, "followUp": follow}
             if extra >= 3:
                 problem("many return trips", where, "%d maps visited more than once before the run: %s" % (extra, pre))
 

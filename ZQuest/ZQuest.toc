@@ -1,0 +1,80 @@
+## Interface: 11509, 16001
+## Interface-Classic: 11509
+## Title: ZQuest
+## Title-zhCN: ZQuest
+## IconTexture: Interface\AddOns\ZQuest\Textures\zquest_logo-64
+## Notes: Free, community-made leveling guides (based on RestedXP Guides, CC BY-NC-SA 4.0)
+## Author: ZQuest contributors (based on RestedXP Guides by RestedXP)
+## Version: 1.7.0
+## Category: Quests
+## Category-deDE: Quests
+## Category-esES: Misiones
+## Category-esMX: Misiones
+## Category-frFR: Quêtes
+## Category-itIT: Missioni
+## Category-koKR: 퀘스트
+## Category-ptBR: Missões
+## Category-ruRU: Задания
+## Category-zhCN: 任务
+## Category-zhTW: 任務
+## OptionalDeps: Questie
+## SavedVariables: ZQData, ZQDB, ZQSettings, ZQString, ZQQuestieDump
+## SavedVariablesPerCharacter: ZQCData, ZQCTrackingData, ZQCComms, ZQCSettings
+
+libs\embeds_Mainline.xml [AllowLoadGameType standard,camelot]
+libs\embeds.xml [AllowLoadGameType vanilla,tbc,wrath,cata,mists]
+locale\locales.xml
+UI\includes.xml
+
+Locale.lua
+Themes.lua
+Communications.lua
+RXPGuides.lua
+GuideWindow.lua
+Help.lua
+SettingsPanel.lua
+
+DB/forever.xml [AllowLoadGameType camelot]
+
+HSBatching.lua
+QuestLog.lua
+ActiveItemFrame.lua
+LevelingTracker.lua
+Timers.lua
+Targeting.lua
+Tips.lua
+InventoryManager.lua
+
+
+map.lua
+Terrain.lua
+PathHints.lua
+Travel.lua
+functions.lua
+GuideLoader.lua
+SmartStart.lua
+WelcomeFrame.lua
+Feedback.lua
+OpenXPCard.lua
+WaypointCheck.lua
+ChatFilter.lua
+Helpers.lua
+OpenXPTooltips.lua
+QuestDataDump.lua
+
+Guides/GuideList-forever.xml [AllowLoadGameType camelot]
+
+
+
+
+
+
+
+
+
+Talents.lua [AllowLoadGameType cata,vanilla,camelot,tbc]
+Guides/Talents/classic.xml [AllowLoadGameType vanilla,camelot]
+
+ItemUpgrades.lua [AllowLoadGameType tbc,vanilla,camelot,cata]
+
+CptStadicsVendorTreasures.lua [AllowLoadGameType vanilla,camelot,tbc,wrath]

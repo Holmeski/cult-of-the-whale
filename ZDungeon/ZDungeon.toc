@@ -1,0 +1,12 @@
+## Interface: 16001, 11509
+## Title: ZDungeon
+## Notes: Dungeon quests, the XP they are worth, how to get there, and what you still need before you leave. Type /zd
+## Author: Adam (quest data from QuestieDB)
+## Version: 1.2.0
+## Category: Quests
+## OptionalDeps: ZQuest, ForeverDungeonJournal, ForeverLevelingBiS, NeedRoll
+## SavedVariables: ZDungeonDB
+## AddonCompartmentFunc: ZDungeon_OnAddonCompartmentClick
+
+Data.lua
+Core.lua

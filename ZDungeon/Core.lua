@@ -248,6 +248,16 @@ local function Chain(id, out, seen)
     return out
 end
 
+-- The highest level any quest in a chain asks for (0 when there is no chain).
+local function ChainLevel(chain)
+    local need = 0
+    for _, p in ipairs(chain) do
+        local q = ns.quests[p]
+        if q and (q.req or 1) > need then need = q.req end
+    end
+    return need
+end
+
 local STATUS = {
     done = {text = "Done", r = 0.5, g = 0.5, b = 0.5, order = 5},
     log = {text = "In your log", r = 0.4, g = 0.8, b = 1, order = 1},
@@ -336,7 +346,9 @@ local function BuildRows(d)
                 local chain = Chain(id)
                 local chainXP = 0
                 for _, p in ipairs(chain) do chainXP = chainXP + (QuestXP(p, true)) end
+                local needLevel = ChainLevel(chain)
                 tinsert(rows, {id = id, q = q, name = q.name, level = q.level, status = st,
+                               chainLevel = needLevel > (UnitLevel("player") or 1) and needLevel or nil,
                                xp = st == "done" and 0 or xp, approx = approx, unknown = approx and q.xp == 0,
                                chain = chain, chainXP = chainXP, where = WhereShort(q.start)})
             end
@@ -1072,11 +1084,14 @@ local function DetailText(row)
             local pq = ns.quests[p]
             local who = pq.start and (" - " .. WhereShort(pq.start) .. (pq.start.k ~= "item" and pq.start.m and (": " .. pq.start.n) or "")) or ""
             local xp, approx = QuestXP(p, true)
+            local note = InLog(p) and "  |cff66ccff[in your log]|r" or ""
+            if (pq.req or 1) > (UnitLevel("player") or 1) then note = note .. "  |cffff6644[needs level " .. pq.req .. "]|r" end
             tinsert(parts, ("  %d. %s (lvl %d, %s XP)%s%s"):format(i, pq.name, pq.level,
-                XPText(xp, approx, approx and pq.xp == 0), who, InLog(p) and "  |cff66ccff[in your log]|r" or ""))
+                XPText(xp, approx, approx and pq.xp == 0), who, note))
         end
-        tinsert(L, ("|cffffd100Do first (%d step%s, +%s XP on the way):|r"):format(#row.chain,
-            #row.chain == 1 and "" or "s", Comma(row.chainXP)))
+        tinsert(L, ("|cffffd100Do first (%d step%s, +%s XP on the way):|r%s"):format(#row.chain,
+            #row.chain == 1 and "" or "s", Comma(row.chainXP),
+            row.chainLevel and ("  |cffff6644You can't start this chain until level " .. row.chainLevel .. ".|r") or ""))
         tinsert(L, concat(parts, "\n"))
     end
     local xpLine
@@ -1114,7 +1129,7 @@ local function CreateWindow()
     title:SetText("ZDungeon")
     local sub = Text(f, "GameFontDisableSmall")
     sub:SetPoint("LEFT", title, "RIGHT", 10, -1)
-    sub:SetText("dungeon quests, what they are worth, and how to get there")
+    sub:SetText("dungeon planner")
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 2, 2)
@@ -1130,11 +1145,12 @@ local function CreateWindow()
         end)
         return b
     end
-    f.gearMode = ModeButton("Gear", -40, "gear")
-    f.questMode = ModeButton("Quests", -118, "quests")
+    f.tipsMode = ModeButton("Deep dive", -40, "tips")
+    f.gearMode = ModeButton("Gear", -118, "gear")
+    f.questMode = ModeButton("Quests", -196, "quests")
     local nextButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     nextButton:SetSize(150, 22)
-    nextButton:SetPoint("TOPRIGHT", -200, -9)
+    nextButton:SetPoint("TOPRIGHT", -278, -9)
     nextButton:SetText("Where do I go next?")
     nextButton:SetScript("OnClick", function() OpenNext() end)
 
@@ -1315,6 +1331,32 @@ local function CreateWindow()
     detail:SetPoint("BOTTOMLEFT", 4, 4)
     detail:SetSize(606, 166)
     SetBackdrop(detail, 0.5)
+    f.detailFrame = detail
+
+    -- deep dive: one long page of text, scrolled with the mouse wheel
+    local scroll = CreateFrame("ScrollFrame", nil, right)
+    scroll:SetPoint("TOPLEFT", 8, -112)
+    scroll:SetSize(598, 448)
+    local page = CreateFrame("Frame", nil, scroll)
+    page:SetSize(598, 448)
+    scroll:SetScrollChild(page)
+    f.tipsText = Text(page, "GameFontHighlight")
+    f.tipsText:SetPoint("TOPLEFT", 4, -2)
+    f.tipsText:SetWidth(580)
+    f.tipsText:SetJustifyV("TOP")
+    if f.tipsText.SetWordWrap then f.tipsText:SetWordWrap(true) end
+    if f.tipsText.SetSpacing then f.tipsText:SetSpacing(4) end
+    scroll:EnableMouseWheel(true)
+    scroll:SetScript("OnMouseWheel", function(self, delta)
+        local h = f.tipsText.GetStringHeight and f.tipsText:GetStringHeight()
+        local limit = max(0, (type(h) == "number" and h or 0) - 430)
+        f.tipsScroll = max(0, min(limit, (f.tipsScroll or 0) - delta * 60))
+        self:SetVerticalScroll(f.tipsScroll)
+    end)
+    scroll:Hide()
+    f.tipsFrame, f.tipsPage = scroll, page
+    f.tipsScroll, f.tableShown = 0, true
+
     f.detail = Text(detail, "GameFontHighlightSmall")
     f.detail:SetPoint("TOPLEFT", 8, -8)
     f.detail:SetWidth(590)
@@ -1393,6 +1435,74 @@ local function ShowChecks(f, gear)
     f.otherClasses:SetChecked(state.otherClasses)
     f.upgradesOnly:SetChecked(state.upgradesOnly)
     f.showUnusable:SetChecked(state.showUnusable)
+end
+
+-- The deep dive page for a dungeon: what it is, what to look out for, and
+-- what to do in your role (yours first).
+local ROLE_FIRST = {WARRIOR = "tank", PRIEST = "heal"}
+local ROLE_NAME = {tank = "Tanking it", heal = "Healing it", dps = "Dealing damage"}
+
+local function TipsText(d)
+    local t = ns.tips and ns.tips[d.key]
+    if not t then
+        local have = {}
+        for _, other in ipairs(ns.dungeons) do
+            if ns.tips and ns.tips[other.key] then tinsert(have, other.name) end
+        end
+        return "|cffffd100No deep dive written for " .. d.name .. " yet.|r\n\nWritten so far: " .. concat(have, ", ")
+            .. ".\n\nThe rest are added as they are researched; Forever changed many of the old dungeons, so they are not filled in from Classic memory."
+    end
+    local L = {}
+    local function head(s) tinsert(L, "") tinsert(L, "|cffffd100" .. s .. "|r") end
+    local function list(items) for _, line in ipairs(items or {}) do tinsert(L, "  -  " .. line) end end
+    tinsert(L, t.about)
+    head("Look out for")
+    list(t.watch)
+    local first = ROLE_FIRST[PlayerClass()] or "dps"
+    local order = {first}
+    for _, r in ipairs({"tank", "heal", "dps"}) do if r ~= first then tinsert(order, r) end end
+    for i, r in ipairs(order) do
+        head(ROLE_NAME[r] .. (i == 1 and "  |cff40ff40(most likely you)|r" or ""))
+        list(t[r])
+    end
+    head("Bosses, in order")
+    for i, b in ipairs(t.bosses or {}) do
+        tinsert(L, ("  %d.  |cffffffff%s|r  -  %s"):format(i, b[1], b[2]))
+    end
+    tinsert(L, "")
+    tinsert(L, "|cff808080Mechanics checked against current WoW Forever dungeon guides, " .. (ns.tipsChecked or "") .. ". Scroll with the mouse wheel.|r")
+    return concat(L, "\n")
+end
+
+local function ShowTable(f, on)
+    for _, h in ipairs(f.colHeaders) do if not on then h:Hide() end end
+    for _, r in ipairs(f.rows) do if not on then r:Hide() end end
+    if on then
+        f.cols = nil -- the next ApplyLayout shows the headers again
+        f.tipsFrame:Hide()
+        f.detailFrame:Show()
+    else
+        f.more:SetText("")
+        f.detailFrame:Hide()
+        f.tipsFrame:Show()
+    end
+end
+
+local function RefreshTips(f, d)
+    if f.tableShown ~= false then ShowTable(f, false) f.tableShown = false end
+    for _, c in ipairs({f.hideDone, f.otherClasses, f.upgradesOnly, f.showUnusable}) do c:Hide() c.label:Hide() end
+    f.header:SetText(("%s  |cff888888levels %d-%d|r"):format(d.name, d.lo, d.hi))
+    f.summary:SetText("Deep dive: what this dungeon is like and how to play your part in it.")
+    f.travel:SetText(TravelText(d))
+    f.rate:SetText("")
+    f.entranceButton:SetShown(d.entrance and true or false)
+    f.tipsText:SetText(TipsText(d))
+    if f.tipsFor ~= d then
+        f.tipsFor, f.tipsScroll = d, 0
+        f.tipsFrame:SetVerticalScroll(0)
+    end
+    local h = f.tipsText.GetStringHeight and f.tipsText:GetStringHeight()
+    f.tipsPage:SetHeight(max(448, (type(h) == "number" and h or 448) + 20))
 end
 
 local bisHooked
@@ -1557,6 +1667,11 @@ Refresh = function()
         return
     end
 
+    if state.mode == "tips" then
+        RefreshTips(f, d)
+        return
+    end
+    if f.tableShown == false then ShowTable(f, true) f.tableShown = true end
     if state.mode == "gear" then
         RefreshGear(f, d)
         return
@@ -1629,7 +1744,10 @@ Refresh = function()
             end
             local stText = st.text
             if row.status == "level" then stText = "Level " .. row.q.req end
-            if row.status == "chain" then stText = ("Chain first (%d)"):format(#row.chain) end
+            if row.status == "chain" then
+                stText = row.chainLevel and ("Chain (%d), level %d"):format(#row.chain, row.chainLevel)
+                    or ("Chain first (%d)"):format(#row.chain)
+            end
             r.cells[4]:SetText(stText)
             r.cells[4]:SetTextColor(st.r, st.g, st.b)
             r.cells[5]:SetText(row.where)
@@ -1704,8 +1822,8 @@ SlashCmdList["ZDUNGEON"] = function(input)
             ZDungeonDB.cardHidden = nil
             UpdateCard()
         elseif plan and card and card:IsShown() then
-            card:Hide()
             ZDungeonDB.cardHidden = true
+            UpdateCard()
             UpdateTracker()
         else
             local d = run.dungeon or preview or state.dungeon
@@ -1760,13 +1878,37 @@ local function PlanSteps()
     if not d then return nil end
     local steps = {}
     local function add(step) tinsert(steps, step) end
+    local myLevel = UnitLevel("player") or 1
+    -- the level a quest is really waiting for: the highest one its unfinished chain asks for
+    local function LockLevel(id)
+        local need = 0
+        for _, p in ipairs(Chain(id)) do
+            local q = ns.quests[p]
+            if q and (q.req or 1) > myLevel and q.req > need then need = q.req end
+        end
+        return need > 0 and need or nil
+    end
+    local function GroupLock(ids)
+        local need = nil
+        for _, id in ipairs(ids) do
+            if not IsDone(id) and not InLog(id) then
+                local l = LockLevel(id)
+                if not l then return nil end
+                if not need or l > need then need = l end
+            end
+        end
+        return need
+    end
 
     for _, id in ipairs(plan.chain) do
         local q = ns.quests[id]
         if q then
+            local lvl = UnitLevel("player") or 1
+            local blocked = not IsDone(id) and not InLog(id) and (q.req or 1) > lvl
             add({kind = "chain", text = "Chain quest: " .. q.name,
-                 sub = (InLog(id) and "In your log. " or "Get it from ") .. (InLog(id) and "Finish it and hand it in." or PlaceText(q.start)),
-                 place = q.start, done = IsDone(id)})
+                 sub = blocked and ("Needs level " .. q.req .. ". You are level " .. lvl .. ".")
+                     or (InLog(id) and "In your log. Finish it and hand it in." or ("Get it from " .. PlaceText(q.start))),
+                 place = q.start, done = IsDone(id), blocked = blocked, level = q.req})
         end
     end
 
@@ -1793,8 +1935,10 @@ local function PlanSteps()
             tinsert(names, ns.quests[id].name)
             if not (IsDone(id) or InLog(id)) then done = false end
         end
+        local lock = not done and GroupLock(g.ids) or nil
         add({kind = "pickup", text = "Pick up from " .. g.place.n, sub = concat(names, ", ") .. "  -  " .. (ZoneName(g.place.m) or "?")
-             .. (" (%.0f, %.0f)"):format(g.place.x or 0, g.place.y or 0), place = g.place, done = done})
+             .. (" (%.0f, %.0f)"):format(g.place.x or 0, g.place.y or 0), place = g.place, done = done,
+             blocked = lock and true or false, level = lock})
     end
 
     local arrived = plan.arrived or run.dungeon == d
@@ -1831,7 +1975,8 @@ local function PlanSteps()
                     sub = "Not picked up yet."
                 end
             end
-            add({kind = "do", text = "Finish: " .. q.name, sub = sub, done = done})
+            local lock = not done and not InLog(id) and LockLevel(id) or nil
+            add({kind = "do", text = "Finish: " .. q.name, sub = sub, done = done, blocked = lock and true or false, level = lock})
         end
     end
 
@@ -1852,8 +1997,9 @@ local function PlanSteps()
             tinsert(names, ns.quests[id].name)
             if not IsDone(id) then done = false end
         end
+        local lock = not done and GroupLock(g.ids) or nil
         add({kind = "turnin", text = "Hand in to " .. g.place.n, sub = concat(names, ", ") .. "  -  " .. PlaceText(g.place),
-             place = g.place.m and g.place or nil, done = done})
+             place = g.place.m and g.place or nil, done = done, blocked = lock and true or false, level = lock})
     end
     return steps, d
 end
@@ -1887,8 +2033,8 @@ local function CreateCard()
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 3, 3)
     close:SetScript("OnClick", function()
-        f:Hide()
         if ZDungeonDB then ZDungeonDB.cardHidden = true end
+        UpdateCard()
         UpdateTracker()
     end)
     f.body = Text(f, "GameFontHighlightSmall")
@@ -1905,9 +2051,13 @@ local function CreateCard()
         b:SetScript("OnClick", fn)
         return b
     end
-    f.mapButton = Button("Show on map", 96, 8, function(self) ShowOnMap(self.place) end)
-    f.nextButton = Button("Where next?", 96, 108, function() OpenNext() end)
-    f.openButton = Button("Details", 70, 208, function()
+    f.mapButton = Button("Map", 50, 8, function(self) ShowOnMap(self.place) end)
+    f.nextButton = Button("Where next?", 92, 60, function() OpenNext() end)
+    f.arrowButton = Button("Arrow on", 76, 154, function()
+        if ZDungeonDB then ZDungeonDB.noArrow = not ZDungeonDB.noArrow end
+        UpdateCard()
+    end)
+    f.openButton = Button("Details", 66, 232, function()
         local d = plan and DungeonByKey(plan.key)
         if d then
             if not frame then frame = CreateWindow() end
@@ -1920,8 +2070,15 @@ local function CreateCard()
     return f
 end
 
+local function ReleaseArrow()
+    local api = _G.RXPGuides
+    if card and card.arrowKey and api and api.ClearArrowTarget then pcall(api.ClearArrowTarget) end
+    if card then card.arrowKey = nil end
+end
+
 UpdateCard = function()
     if not plan or (ZDungeonDB and ZDungeonDB.cardHidden) then
+        ReleaseArrow()
         if card then card:Hide() end
         return
     end
@@ -1935,35 +2092,82 @@ UpdateCard = function()
         steps = PlanSteps()
     end
     if not card then card = CreateCard() end
-    local doneCount, current = 0, nil
+    -- a chain step you are too low for holds up everything that needs it:
+    -- the first thing you can actually do is the current step
+    local held = false
+    for _, st in ipairs(steps) do
+        if st.kind == "chain" and st.blocked and not st.done then held = true end
+    end
+    local doneCount, current, waiting, waitLevel = 0, nil, {}, 0
     for i, st in ipairs(steps) do
-        if st.done then doneCount = doneCount + 1 elseif not current then current = i end
+        if st.done then
+            doneCount = doneCount + 1
+        elseif st.blocked then
+            tinsert(waiting, st)
+            if (st.level or 0) > waitLevel then waitLevel = st.level end
+        elseif st.kind == "chain" and held then
+            tinsert(waiting, st) -- later links of a chain whose first link is level-locked
+        elseif not current then
+            current = i
+        end
     end
     card.title:SetText(("%s  |cff888888%d of %d|r"):format(d.name, doneCount, #steps))
     local L = {}
     if not current then
-        tinsert(L, "|cff40ff40Everything on this list is done.|r")
+        if #waiting > 0 then
+            tinsert(L, ("|cffff6644Nothing more to do here until level %d.|r"):format(waitLevel))
+        else
+            tinsert(L, "|cff40ff40Everything on this list is done.|r")
+        end
         tinsert(L, "Click |cffffd100Where next?|r for your next options.")
     else
-        if current > 1 then
-            tinsert(L, ("|cff808080[x] %d step%s done|r"):format(current - 1, current == 2 and "" or "s"))
+        if doneCount > 0 then
+            tinsert(L, ("|cff808080[x] %d step%s done|r"):format(doneCount, doneCount == 1 and "" or "s"))
         end
         local st = steps[current]
         tinsert(L, "|cffffd100> " .. st.text .. "|r")
         if st.sub and st.sub ~= "" then tinsert(L, "   |cffffffff" .. st.sub .. "|r") end
-        local shown = 0
+        local shown, rest = 0, 0
         for i = current + 1, #steps do
-            if shown < 5 then
-                local n = steps[i]
-                tinsert(L, (n.done and "|cff808080[x] " or "|cffbbbbbb[ ] ") .. n.text .. "|r")
-                shown = shown + 1
+            local n = steps[i]
+            if not n.done and not n.blocked then
+                if shown < 5 then
+                    tinsert(L, "|cffbbbbbb[ ] " .. n.text .. "|r")
+                    shown = shown + 1
+                else
+                    rest = rest + 1
+                end
             end
         end
-        local more = #steps - current - shown
-        if more > 0 then tinsert(L, ("|cff808080... and %d more|r"):format(more)) end
+        if rest > 0 then tinsert(L, ("|cff808080... and %d more|r"):format(rest)) end
+    end
+    if #waiting > 0 then
+        tinsert(L, ("|cffff6644Waiting for level %d:|r"):format(waitLevel > 0 and waitLevel or 0))
+        for i, st in ipairs(waiting) do
+            if i <= 4 then tinsert(L, "|cffff6644   " .. st.text .. "|r") end
+        end
+        if #waiting > 4 then tinsert(L, ("|cff808080   ... and %d more|r"):format(#waiting - 4)) end
     end
     card.body:SetText(concat(L, "\n"))
     local place = current and steps[current].place or nil
+    -- hand ZQuest's arrow the current step (and give it back when there is none)
+    local api = _G.RXPGuides
+    if api and api.SetArrowTarget then
+        local want = nil
+        if place and place.m and place.x and not (ZDungeonDB and ZDungeonDB.noArrow) then
+            want = place.m .. ":" .. place.x .. ":" .. place.y .. ":" .. steps[current].text
+        end
+        if want ~= card.arrowKey then
+            card.arrowKey = want
+            if want then
+                pcall(api.SetArrowTarget, place.m, place.x, place.y, steps[current].text)
+            elseif api.ClearArrowTarget then
+                pcall(api.ClearArrowTarget)
+            end
+        end
+    end
+    card.arrowButton:SetText((ZDungeonDB and ZDungeonDB.noArrow) and "Arrow off" or "Arrow on")
+    card.arrowButton:SetShown(api and api.SetArrowTarget and true or false)
     card.mapButton.place = place
     card.mapButton:SetShown(place and place.m and true or false)
     local h = card.body.GetStringHeight and card.body:GetStringHeight()

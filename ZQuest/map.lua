@@ -1137,6 +1137,12 @@ local function updateArrowData()
         end
     end
 
+    -- ZDungeon (companion addon): a target set from outside holds the arrow
+    -- while it is set (addon.SetExternalWaypoint, at the end of this file)
+    if addon.externalWP and ProcessWaypoint(addon.externalWP) then
+        return
+    end
+
     local function SetArrowWP()
         lowPrioWPs = {}
         for _, element in ipairs(addon.activeWaypoints) do
@@ -1252,7 +1258,7 @@ function addon.UpdateGotoSteps()
     local hideArrow = false
     local forceArrowUpdate = UnitIsGhost("player") == (af.element ~= corpseWP)
     DisplayLines()
-    if #addon.activeWaypoints == 0 and not forceArrowUpdate then
+    if #addon.activeWaypoints == 0 and not forceArrowUpdate and not addon.externalWP then
         addon.hideArrow = true
         af:Hide()
         return
@@ -1607,3 +1613,28 @@ addon.mapId["StormwindClassic"] = addon.mapId["Stormwind City"]
 addon.mapId["StormwindNew"] = addon.mapId["Stormwind City"]
 addon.mapId["EPLClassic"] = addon.mapId["Eastern Plaguelands"]
 addon.mapId["EPLNew"] = addon.mapId["Eastern Plaguelands"]
+
+-- ZDungeon (companion addon): point the arrow at a place of its own, or give
+-- the arrow back to the guide.
+--   RXPGuides.SetArrowTarget(uiMapId, x, y, title)   x and y as map percentages (0-100)
+--   RXPGuides.ClearArrowTarget()
+function addon.SetExternalWaypoint(map, x, y, title)
+    if map and x and y then
+        local wx, wy, inst = HBD:GetWorldCoordinatesFromZone(x / 100, y / 100, map)
+        if not wx then return false end
+        addon.externalWP = {wx = wx, wy = wy, instance = inst, zone = map, x = x, y = y,
+                            title = title, generated = 1, arrow = true, external = true}
+    else
+        if not addon.externalWP then return true end
+        addon.externalWP = nil
+    end
+    af.forceUpdate = true
+    af.distance = nil
+    updateArrowData()
+    if addon.UpdateGotoSteps then pcall(addon.UpdateGotoSteps) end
+    return true
+end
+if _G.RXPGuides then
+    _G.RXPGuides.SetArrowTarget = function(...) return addon.SetExternalWaypoint(...) end
+    _G.RXPGuides.ClearArrowTarget = function() return addon.SetExternalWaypoint(nil) end
+end

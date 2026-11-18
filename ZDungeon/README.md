@@ -17,6 +17,13 @@ Status: early release. Built and tested outside the game; in-game testing is in 
 - A small window, like ZQuest's, that walks you through one dungeon step by step.
 - Chain quests first, then the pick-ups (nearest first), the trip to the entrance, what to get inside, and the hand-ins.
 - Steps tick themselves off from your quest log. A button shows the current step on the map.
+- With ZQuest installed, ZQuest's arrow points at the current step. The **Arrow** button on the card turns that off.
+- Steps you are too low for are set aside under "Waiting for level N" so the card always shows something you can do now.
+
+### Deep dives
+- A page per dungeon: what it is like, what to look out for, how to tank it, heal it and deal damage in it, and every boss in order with its tricks.
+- Your own role comes first.
+- Written so far: Ruins of Lordaeron, Wailing Caverns, Shadowfang Keep, Blackfathom Deeps, Excavation Site: Wetlands, City of Dalaran, Gnomeregan, Razorfen Kraul and the Scarlet Monastery Graveyard. More are added as they are researched.
 
 ### Level-up cheers
 - When a new level opens a dungeon or new dungeon quests, ZDungeon congratulates you and says what just opened.
@@ -65,7 +72,7 @@ ZDungeon runs on its own. These addons are optional and each adds something:
 
 | Addon | Adds |
 |---|---|
-| ZQuest | Travel routes and times, and a button that opens the dungeon walkthrough |
+| ZQuest | Travel routes and times, the arrow, and a button that opens the dungeon walkthrough |
 | DungeonJournal (ForeverDungeonJournal) | The gear list |
 | Forever Leveling BiS | Upgrade numbers for your spec |
 | NeedRoll | A button that opens an item in NeedRoll |
@@ -85,6 +92,8 @@ Copy the `ZDungeon` folder into `World of Warcraft\_forever_\Interface\AddOns`, 
 ## Credits and license
 
 Quest data is generated from [QuestieDB](https://github.com/Questie/QuestieDB), which is licensed under the GNU General Public License v3. ZDungeon is released under the same license.
+
+The deep dives are ZDungeon's own text. Their mechanics were checked against the WoW Forever dungeon guides at [Method](https://www.method.gg/wow-forever) and [Warcraft Tavern](https://www.warcrafttavern.com/forever/).
 
 Thanks to the authors of Questie, OpenXP, DungeonJournal, Forever Leveling BiS and NeedRoll. ZDungeon is not affiliated with any of them, or with Blizzard Entertainment.
 

@@ -422,6 +422,22 @@ local function NewLine(block)
     line.bar:SetPoint("LEFT", line.barBg, "LEFT")
     line.count = line:CreateFontString(nil, "OVERLAY")
     line.count:SetTextColor(unpack(C.dim))
+    -- a quest line (its XP and name) can be clicked to open the quest
+    line:SetScript("OnMouseUp", function(self, button)
+        if self.quest and card.OpenQuest then
+            pcall(card.OpenQuest, self.quest, IsShiftKeyDown and IsShiftKeyDown())
+        end
+    end)
+    line:SetScript("OnEnter", function(self)
+        if not self.quest then return end
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(L("Click: open this quest"), 1, 1, 1)
+        if self.tip then GameTooltip:AddLine(self.tip, 0.8, 0.8, 0.8, true) end
+        GameTooltip:AddLine(L("Shift-click: put it in chat"), 0.6, 0.6, 0.6)
+        GameTooltip:Show()
+    end)
+    line:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    line:EnableMouse(false)
     return line
 end
 
@@ -1137,6 +1153,123 @@ function card.ReportError(err)
     print("|cFFFF7043ZQuest card error|r (please send this to the ZQuest author): " .. err)
 end
 
+---------------------------------------------------------------------------
+-- The quest you're working on: what it pays, and a click to open it
+---------------------------------------------------------------------------
+
+local function Commas(n)
+    local s = tostring(math.floor(n + 0.5))
+    local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    return (out:gsub("^,", ""))
+end
+
+-- XP for a quest at your level now: xp, whether it is an estimate, and the
+-- full amount before the cut for outleveling it (when known). Asked in
+-- order: a companion addon (ZDungeon learns from your hand-ins how the
+-- game lists XP), Questie's numbers seen in Forever, then the game's own.
+function card.QuestXP(id)
+    if not id then return end
+    local maxLevel = GetMaxPlayerLevel and GetMaxPlayerLevel() or 60
+    if (UnitLevel and UnitLevel("player") or 1) >= maxLevel then return end
+    local api = _G.RXPGuides
+    if api and type(api.QuestXP) == "function" then
+        local ok, xp, est, full = pcall(api.QuestXP, id)
+        if ok and type(xp) == "number" and xp > 0 then return xp, est, full end
+    end
+    local xp, full
+    pcall(function()
+        local mod = _G.QuestieLoader and _G.QuestieLoader:ImportModule("QuestXP")
+        if mod and mod.GetQuestLogRewardXP then
+            xp = mod:GetQuestLogRewardXP(id, false)
+            full = mod:GetQuestLogRewardXP(id, true)
+        end
+    end)
+    if type(xp) == "number" and xp > 0 then return xp, true, type(full) == "number" and full > 0 and full or nil end
+    if GetQuestLogRewardXP then
+        local ok, live = pcall(GetQuestLogRewardXP, id)
+        if ok and type(live) == "number" and not (addon.IsSecretValue and addon.IsSecretValue(live)) and live > 0 then
+            return live, false
+        end
+    end
+end
+
+-- The quests a step is about, in order, each once
+local function StepQuests(step)
+    local ids, seen = {}, {}
+    for _, e in ipairs(step.elements or {}) do
+        local id = tonumber(e.questId)
+        if id and id > 0 and not seen[id] and (e.tag == "accept" or e.tag == "turnin" or e.tag == "complete") then
+            seen[id] = true
+            tinsert(ids, id)
+        end
+    end
+    return ids
+end
+
+function card.QuestLine(id)
+    local name = QuestName(id)
+    local xp, est, full = card.QuestXP(id)
+    local text, tip
+    if xp then
+        text = fmt("|cFFF2C35C+%s%s XP|r", est and "~" or "", Commas(xp))
+        local need = UnitXPMax and UnitXPMax("player") or 0
+        if need > 0 then
+            local share = xp / need * 100
+            text = text .. fmt(" |cFF9EA3B3(%s%% of a level)|r", share >= 10 and fmt("%d", share) or fmt("%.1f", share))
+        end
+        if full and full > xp * 1.05 then
+            tip = fmt(L("Pays %s XP at your level. It paid %s before you outleveled it."), Commas(xp), Commas(full))
+            text = text .. " |cFFFF7043" .. L("reduced") .. "|r"
+        elseif est then
+            tip = L("The XP is an estimate.")
+        end
+    elseif (UnitLevel and UnitLevel("player") or 1) >= (GetMaxPlayerLevel and GetMaxPlayerLevel() or 60) then
+        return "|cFF5AB8FF[" .. name .. "]|r" -- no XP at the level cap
+    else
+        text = "|cFF9EA3B3" .. L("XP not known") .. "|r"
+    end
+    return text .. "  |cFF5AB8FF[" .. name .. "]|r", tip
+end
+
+-- A link the game made for a quest in your log, or nil
+local function RealQuestLink(id)
+    if not GetQuestLink then return end
+    local ok, link = pcall(GetQuestLink, id)
+    if ok and type(link) == "string" and link ~= "" then return link end
+end
+
+-- Click: the quest log at that quest, or the quest's pop-up when it isn't
+-- in your log. Shift-click: into chat.
+function card.OpenQuest(id, shift)
+    local name = QuestName(id)
+    local real = RealQuestLink(id)
+    if shift then
+        local text = real or ("[" .. name .. "]")
+        local util = _G.ChatFrameUtil
+        if util and util.InsertLink and util.InsertLink(text) then return end
+        if ChatEdit_InsertLink and ChatEdit_InsertLink(text) then return end
+        if util and util.OpenChat then util.OpenChat(text) return end
+        if ChatFrame_OpenChat then ChatFrame_OpenChat(text) end
+        return
+    end
+    if addon.IsOnQuest and addon.IsOnQuest(id) then
+        if QuestMapFrame_OpenToQuestDetails and pcall(QuestMapFrame_OpenToQuestDetails, id) then return end
+        local index = GetQuestLogIndexByID and GetQuestLogIndexByID(id)
+        if index and index > 0 and _G.QuestLogFrame and QuestLog_SetSelection then
+            local ok = pcall(function()
+                ShowUIPanel(_G.QuestLogFrame)
+                QuestLog_SetSelection(index)
+                if QuestLog_Update then QuestLog_Update() end
+            end)
+            if ok then return end
+        end
+    end
+    local link = real or fmt("|cffffff00|Hquest:%d:%d|h[%s]|h|r", id, UnitLevel and UnitLevel("player") or 1, name)
+    local ref = link:match("|H(.-)|h")
+    if ref and SetItemRef and pcall(SetItemRef, ref, link, "LeftButton") then return end
+    print("|cFF5AB8FFZQuest:|r " .. name .. " " .. L("isn't in your quest log yet."))
+end
+
 local function LayoutBlock(b, step, first)
     local textWidth = Width() - PAD * 2 - 34 - 12
     b.sep:SetShown(not first)
@@ -1153,6 +1286,17 @@ local function LayoutBlock(b, step, first)
     end
     b:SetAlpha(role == "done" and 0.45 or role == "side" and 0.8 or 1)
     -- a pickup step is where you get the quest; say so, since it isn't in your log yet
+    if role == "now" then
+        -- what the quest pays, with a click to open it
+        local quests = StepQuests(step)
+        for i = math.min(#quests, 2), 1, -1 do
+            local ok, text, tip = pcall(card.QuestLine, quests[i])
+            if ok and text then tinsert(lines, 1, {text = text, plain = true, quest = quests[i], tip = tip}) end
+        end
+        if #quests > 2 then
+            tinsert(lines, 3, {text = "|cFF9EA3B3" .. fmt(L("+ %d more quests on this step"), #quests - 2) .. "|r", plain = true})
+        end
+    end
     if role == "now" and not step.detour then
         for _, e in ipairs(step.elements or {}) do
             local id = tonumber(e.questId)
@@ -1216,6 +1360,8 @@ local function LayoutBlock(b, step, first)
                 end
             end
 
+            line.quest, line.tip = data.quest, data.tip
+            line:EnableMouse(data.quest and true or false)
             line.text:SetText(data.text)
             if data.done then
                 line.text:SetTextColor(unpack(C.faint))

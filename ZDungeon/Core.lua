@@ -202,15 +202,71 @@ local function Ratio()
     return ratioCache
 end
 
--- XP for a quest now, and whether that number is an estimate.
+-- The share of a quest's XP you get at your level: all of it until you are 5
+-- levels above the quest, then 80%, 60%, 40%, 20%, and 10% from 10 levels up.
+local function LevelShare(questLevel, charLevel)
+    local mult = 2 * (questLevel - charLevel) + 20
+    if mult < 1 then mult = 1 elseif mult > 10 then mult = 10 end
+    return mult / 10
+end
+
+-- XP for a quest now, whether that number is an estimate, and the full
+-- amount (what it pays before the cut for outleveling it) when known.
+--
+-- Whether the game's listed number already has that cut in it is learned
+-- from your own hand-ins (LearnXP below): ZDungeonDB.clientRaw is true when
+-- the game lists the full amount, false when it lists what you really get,
+-- nil until a quest you outlevel has been handed in.
 local function QuestXP(id, request)
     local q = ns.quests[id]
     if not q then return 0, true end
-    if (UnitLevel("player") or 1) >= (GetMaxPlayerLevel and GetMaxPlayerLevel() or 60) then return 0, false end
+    local lvl = UnitLevel("player") or 1
+    if lvl >= (GetMaxPlayerLevel and GetMaxPlayerLevel() or 60) then return 0, false end
     local live = ClientXP(id, request)
-    if live then return live, false end
-    local est = ScaleXP(q.xp, q.level, UnitLevel("player") or 1)
-    return floor(est * Ratio() + 0.5), true
+    if live then
+        if ZDungeonDB and ZDungeonDB.clientRaw then
+            local share = LevelShare(q.level, lvl)
+            if share < 1 then return floor(live * share + 0.5), true, live end
+        end
+        return live, false, (lvl <= q.level + 5) and live or nil
+    end
+    local full = floor(ScaleXP(q.xp, q.level, q.level) * Ratio() + 0.5)
+    local est = ScaleXP(q.xp, q.level, lvl)
+    return floor(est * Ratio() + 0.5), true, full
+end
+
+-- A quest's level, for quests ZDungeon has no data on (Questie knows most).
+local function QuestLevel(id)
+    local q = ns.quests[id]
+    if q then return q.level end
+    local level
+    pcall(function()
+        local mod = _G.QuestieLoader and _G.QuestieLoader:ImportModule("QuestXP")
+        local row = mod and mod.db and mod.db[id]
+        if row and (row[1] or 0) > 0 then level = row[1] end
+    end)
+    return level
+end
+
+-- Every hand-in says what the quest really paid. For a quest you outlevel,
+-- comparing that with what the game listed settles whether listed numbers
+-- are already cut for your level.
+local function LearnXP(id, got, name)
+    if type(id) ~= "number" or type(got) ~= "number" or Secret(got) or got <= 0 or not ZDungeonDB then return end
+    local lvl = UnitLevel("player") or 1
+    local listed, qLevel = clientXP[id], QuestLevel(id)
+    ZDungeonDB.xpSeen = ZDungeonDB.xpSeen or {}
+    ZDungeonDB.xpSeen[id] = {level = lvl, got = got, listed = listed, questLevel = qLevel}
+    if not (listed and qLevel) or lvl <= qLevel + 5 then return end
+    local raw = got < listed * 0.95
+    if ZDungeonDB.clientRaw == raw then return end
+    ZDungeonDB.clientRaw = raw
+    name = (ns.quests[id] and ns.quests[id].name) or name or ("quest " .. id)
+    if raw then
+        print(("|cffffd100ZDungeon:|r %s paid %d XP; the game listed %d. Listed XP is the full amount, so from now on ZDungeon lowers it for quests below your level."):format(name, got, listed))
+    else
+        print(("|cffffd100ZDungeon:|r %s paid %d XP, the same as the game listed. Listed XP already counts your level."):format(name, got))
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2960,6 +3016,13 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
             local zq = _G.RXPGuides
             if zq then
                 zq.DungeonTab = {group = ZQ_GROUP, Open = function() OpenDungeonTab() end}
+                -- quest XP for ZQuest's card: what it pays you now, whether
+                -- that is an estimate, and the full amount when known
+                zq.QuestXP = function(id)
+                    if type(id) ~= "number" or not ns.quests[id] then return nil end
+                    local ok, xp, est, full = pcall(QuestXP, id, true)
+                    if ok and (xp or 0) > 0 then return xp, est, full end
+                end
                 local last = ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
                 if last and last.rev ~= GUIDE_REV then
                     -- from an older version of the guide writer: it is written
@@ -2999,6 +3062,14 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         -- fires constantly elsewhere (auction scans): only matters while the gear list is up
         if frame and frame:IsShown() and state.mode == "gear" then ScheduleRefresh() end
+    elseif event == "QUEST_ACCEPTED" then
+        -- note what the game lists for it, to compare at the hand-in
+        local id = type(arg2) == "number" and arg2 or arg1
+        if type(id) == "number" then C_Timer.After(1, function() ClientXP(id, true) end) end
+        ScheduleRefresh()
+    elseif event == "QUEST_TURNED_IN" then
+        pcall(LearnXP, arg1, arg2)
+        ScheduleRefresh()
     elseif event == "PLAYER_LEVEL_UP" then
         clientXP, ratioCount = {}, -1
         OnLevelUp(arg1)

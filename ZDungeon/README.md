@@ -36,6 +36,8 @@ Status: early release. Built and tested outside the game; in-game testing is in 
 - For chain quests, the steps you have to do first and the XP they pay on the way.
 - Who gives each quest and where, with a button to show it on the map.
 - XP comes from the game itself where the game will answer. Estimates are marked `~`.
+- A quest more than 5 levels below you pays less: 80%, 60%, 40%, 20%, then 10%. ZDungeon checks your own hand-ins to learn whether the game's listed XP already includes that cut, and adjusts if it does not.
+- With ZQuest, the step you are on shows the quest's XP and a click opens the quest.
 
 ### Is it worth the trip
 - Where the entrance is, the route from where you are standing (flights, zeppelins, boats, walking, Hearthstone) and about how long it takes.

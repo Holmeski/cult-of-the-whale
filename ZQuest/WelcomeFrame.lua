@@ -14,6 +14,14 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.2",
+        date = "November 2026",
+        changes = {
+            "The step you're on now shows what its quest pays: the XP at your level and how much of a level that is. It says reduced when you've outleveled the quest",
+            "Click that line to open the quest in your quest log (or its pop-up if you don't have it yet). Shift-click puts the quest in chat",
+        },
+    },
+    {
         version = "1.7.1",
         date = "November 2026",
         changes = {

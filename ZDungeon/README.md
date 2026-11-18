@@ -13,12 +13,12 @@ Status: early release. Built and tested outside the game; in-game testing is in 
 - Each option shows the quest XP ready, how far away it is, and how many gear upgrades are waiting.
 - Pick one and click **Start guide**.
 
-### The guide card
-- A small window, like ZQuest's, that walks you through one dungeon step by step.
-- Chain quests first, then the pick-ups (nearest first), the trip to the entrance, what to get inside, and the hand-ins.
-- Steps tick themselves off from your quest log. A button shows the current step on the map.
-- With ZQuest installed, ZQuest's arrow points at the current step. The **Arrow** button on the card turns that off.
-- Steps you are too low for are set aside under "Waiting for level N" so the card always shows something you can do now.
+### The dungeon guide
+- With ZQuest installed, the guide for a dungeon loads onto **ZQuest's own guide card**, under a **Dungeons** tab next to **Quests**. It uses ZQuest's arrow, its "Getting there" travel steps, its map pins and its automatic ticking.
+- The guide runs in order: chain quests first, then the pick-ups (nearest quest giver first), the trip to the entrance, what to finish inside, and the hand-ins.
+- It only includes what you can do at your level. Quests you are too low for are listed at the end with the level they need.
+- Click **Quests** to go back to your leveling guide where you left it, and **Dungeons** to return to the dungeon guide.
+- Without ZQuest, ZDungeon shows the same steps on a small card of its own.
 
 ### Deep dives
 - A page per dungeon: what it is like, what to look out for, how to tank it, heal it and deal damage in it, and every boss in order with its tricks.
@@ -62,7 +62,7 @@ The gear list needs DungeonJournal. Upgrade numbers need Forever Leveling BiS.
 |---|---|
 | `/zd` | Open or close the window |
 | `/zd next` | Where do I go next? |
-| `/zd guide` | Show or hide the guide card (starts one for the dungeon you are looking at) |
+| `/zd guide` | Open your dungeon guide (or pick a dungeon if you have none) |
 | `/zd check` | Print the missing-quest checklist for the current dungeon |
 | `/zd tracker` | Turn the in-dungeon tracker off or on |
 
@@ -72,7 +72,7 @@ ZDungeon runs on its own. These addons are optional and each adds something:
 
 | Addon | Adds |
 |---|---|
-| ZQuest | Travel routes and times, the arrow, and a button that opens the dungeon walkthrough |
+| ZQuest | The Dungeons tab on its guide card, the arrow and waypoints, travel routes and times |
 | DungeonJournal (ForeverDungeonJournal) | The gear list |
 | Forever Leveling BiS | Upgrade numbers for your spec |
 | NeedRoll | A button that opens an item in NeedRoll |

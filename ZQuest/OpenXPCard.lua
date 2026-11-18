@@ -3049,3 +3049,96 @@ do
         card.CheckTrainerSteps = Wrap("card: trainer steps", card.CheckTrainerSteps)
     end
 end
+
+---------------------------------------------------------------------------
+-- Tabs above the card: Quests | Dungeons
+--
+-- A companion addon (ZDungeon) can put its own guides on this card. It
+-- registers them in a guide group of its own and sets
+--   RXPGuides.DungeonTab = {group = "<its guide group>", Open = function() end}
+-- The Dungeons tab calls Open (which loads one of its guides, or lets the
+-- player pick a dungeon); the Quests tab goes back to the leveling guide
+-- that was up before. Without a provider the tabs never show.
+---------------------------------------------------------------------------
+do
+    local tabs = CreateFrame("Frame", nil, f)
+    tabs:SetPoint("BOTTOMLEFT", f, "TOPLEFT", 0, -1)
+    tabs:SetSize(180, 20)
+    tabs:Hide()
+    card.tabs = tabs
+
+    local function Provider()
+        local api = _G.RXPGuides
+        local p = api and api.DungeonTab
+        return type(p) == "table" and p.group and p or nil
+    end
+
+    local function MakeTab(text, x, tip, onClick)
+        local b = CreateFrame("Button", nil, tabs, "BackdropTemplate")
+        b:SetSize(86, 20)
+        b:SetPoint("BOTTOMLEFT", x, 0)
+        b:SetBackdrop({bgFile = WHITE, edgeFile = WHITE, edgeSize = 1,
+                       insets = {left = 1, right = 1, top = 1, bottom = 1}})
+        b.label = b:CreateFontString(nil, "OVERLAY")
+        b.label:SetPoint("CENTER", 0, 0)
+        FixedFont(b.label, 11)
+        b.label:SetText(text)
+        b:SetScript("OnClick", onClick)
+        b:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(tip, 1, 1, 1)
+            GameTooltip:Show()
+        end)
+        b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        return b
+    end
+
+    local function Style(b, active)
+        if active then
+            b:SetBackdropColor(unpack(C.bg))
+            b:SetBackdropBorderColor(C.blue[1], C.blue[2], C.blue[3], 1)
+            b.label:SetTextColor(unpack(C.text))
+        else
+            b:SetBackdropColor(C.bg[1], C.bg[2], C.bg[3], 0.6)
+            b:SetBackdropBorderColor(unpack(C.border))
+            b.label:SetTextColor(unpack(C.dim))
+        end
+    end
+
+    local questTab = MakeTab(L("Quests"), 0, L("Your leveling guide"), function()
+        local p, g = Provider(), addon.currentGuide
+        if not (p and g and g.group == p.group) then return end
+        local last = ZQCData and ZQCData.zqQuestGuide
+        local target = last and addon.GetGuideTable(last[1], last[2])
+        if target then
+            addon:LoadGuide(target)
+        elseif addon.smartStart and addon.smartStart.Run then
+            addon.smartStart.Run()
+        end
+    end)
+    local dungeonTab = MakeTab(L("Dungeons"), 88, L("Dungeon guides and where to go next"), function()
+        local p = Provider()
+        if p and p.Open then pcall(p.Open) end
+    end)
+
+    function card.UpdateTabs()
+        local p = Provider()
+        if not p or not f:IsShown() then
+            tabs:Hide()
+            return
+        end
+        local g = addon.currentGuide
+        local onDungeon = g and g.group == p.group or false
+        -- remember the leveling guide to come back to
+        if g and not onDungeon and not g.empty and g.group and g.name and ZQCData then
+            ZQCData.zqQuestGuide = {g.group, g.name}
+        end
+        Style(questTab, not onDungeon)
+        Style(dungeonTab, onDungeon)
+        tabs:Show()
+    end
+
+    if C_Timer and C_Timer.NewTicker then
+        C_Timer.NewTicker(1, function() pcall(card.UpdateTabs) end)
+    end
+end

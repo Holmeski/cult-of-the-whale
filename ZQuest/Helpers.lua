@@ -685,3 +685,16 @@ _G.RXPGuides.LoadDungeonGuide = function(dungeon)
     addon:LoadGuide(guide)
     return true
 end
+
+-- ZDungeon (companion addon): load any registered guide by its group and
+-- name, and ask whether one exists. Guides are added at run time with
+-- RXPGuides.RegisterGuide(text).
+_G.RXPGuides.HasGuide = function(group, name)
+    return addon.GetGuideTable(group, name) ~= nil
+end
+_G.RXPGuides.LoadGuideByName = function(group, name)
+    local guide = addon.GetGuideTable(group, name)
+    if not guide then return false end
+    addon:LoadGuide(guide)
+    return true
+end

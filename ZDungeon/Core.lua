@@ -30,6 +30,7 @@ local state = {dungeon = nil, sortKey = "xp", sortDesc = true, offset = 0, selec
 
 -- set further down; declared here so the window and the tracker can call them
 local StartPlan, OpenNext, UpdateCard, card
+local ZQuestApi, OpenDungeonTab
 local plan -- the dungeon guide in progress: {key, ids, chain, order, arrived}
 
 local function Secret(v)
@@ -1817,6 +1818,9 @@ SlashCmdList["ZDUNGEON"] = function(input)
         UpdateTracker()
     elseif input == "next" then
         OpenNext()
+    elseif (input == "guide" or input == "plan") and ZQuestApi() and not plan then
+        local d = run.dungeon or preview
+        if d then StartPlan(d) else OpenDungeonTab() end
     elseif input == "guide" or input == "plan" then
         if plan and ZDungeonDB.cardHidden then
             ZDungeonDB.cardHidden = nil
@@ -2180,8 +2184,223 @@ UpdateCard = function()
     if tracker and tracker:IsShown() then UpdateTracker() end
 end
 
+-- ---------------------------------------------------------------------------
+-- The Dungeons tab on ZQuest's guide card
+--
+-- With ZQuest installed, a dungeon guide is not drawn on ZDungeon's own card:
+-- it is written out as a real ZQuest guide and loaded into ZQuest, so it gets
+-- ZQuest's arrow, "Getting there" legs, map pins and automatic ticking. ZQuest
+-- shows Quests | Dungeons tabs above its card to switch between the two.
+-- ---------------------------------------------------------------------------
+
+local ZQ_GROUP = "ZDungeon"
+
+ZQuestApi = function()
+    local api = _G.RXPGuides
+    if api and api.RegisterGuide and api.LoadGuideByName and api.HasGuide then return api end
+end
+
+local function GuideLine(text)
+    -- guide text is line based; keep names from breaking it
+    return (tostring(text):gsub("[\r\n]", " "):gsub("%s+", " "))
+end
+
+-- The ZQuest guide for one dungeon, for this character at this level.
+local function BuildGuideText(d)
+    logCache = nil
+    local lvl = UnitLevel("player") or 1
+    local name = ("%s (level %d)"):format(d.name, lvl)
+    local L = {"#forever", "#version 1", "#group " .. ZQ_GROUP, "#name " .. name, ""}
+    local function add(line) tinsert(L, line) end
+    local function goto_(p, radius, text)
+        if p and p.m and p.x and p.y then
+            if radius then
+                add(("    .goto %d,%.2f,%.2f,%d >>%s"):format(p.m, p.x, p.y, radius, GuideLine(text)))
+            else
+                add(("    .goto %d,%.2f,%.2f"):format(p.m, p.x, p.y))
+            end
+            return true
+        end
+    end
+
+    -- what is on the list: quests you can do at this level, and their chains
+    local ids, isQuest, chain, seen, later = {}, {}, {}, {}, {}
+    for _, id in ipairs(d.quests) do
+        local q = ns.quests[id]
+        if q and ForMySide(q) and ForMyClass(q) and not IsDone(id) then
+            local c = Chain(id)
+            if (q.req or 1) > lvl or ChainLevel(c) > lvl then
+                tinsert(later, {name = q.name, level = max(q.req or 1, ChainLevel(c))})
+            else
+                tinsert(ids, id)
+                isQuest[id] = true
+                for _, p in ipairs(c) do
+                    if not seen[p] then seen[p] = true tinsert(chain, p) end
+                end
+            end
+        end
+    end
+
+    -- chain quests that are not dungeon quests themselves: take, do, hand in
+    for _, id in ipairs(chain) do
+        local q = ns.quests[id]
+        if q and not isQuest[id] then
+            add("step")
+            local p = q.start
+            if p and p.k ~= "item" and not p.inside then
+                goto_(p)
+                add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(p.n) .. "|r")
+            elseif p then
+                add("    >>" .. GuideLine(p.k == "item" and ("Loot " .. p.n .. (p.from and (" from " .. p.from) or "")) or ("Find " .. p.n)))
+            end
+            add(("    .accept %d >>Accept %s"):format(id, GuideLine(q.name)))
+            add("step")
+            local fin = q.finish or q.start
+            if fin and not fin.inside then goto_(fin) end
+            if q.text and q.text ~= "" then add("    >>" .. GuideLine(q.text)) end
+            add(("    .turnin %d >>Turn in %s"):format(id, GuideLine(q.name)))
+        end
+    end
+
+    -- pick-ups outside, one step per quest giver: nearest first, but a quest
+    -- that needs another quest on this list comes after it
+    local groups, order, secs, depth = {}, {}, {}, {}
+    for _, id in ipairs(ids) do
+        local q = ns.quests[id]
+        local p = q.start
+        if p and not p.inside and p.k ~= "item" then
+            local k = PlaceKey(p)
+            if not groups[k] then
+                groups[k] = {place = p, ids = {}}
+                tinsert(order, k)
+                secs[k] = (p.m and TravelSecs(p)) or 36000
+            end
+            tinsert(groups[k].ids, id)
+            local n = 0
+            for _, c in ipairs(Chain(id)) do if isQuest[c] then n = n + 1 end end
+            depth[k] = min(depth[k] or 99, n)
+        end
+    end
+    sort(order, function(a, b)
+        local x, y = (depth[a] or 0) * 100000 + secs[a], (depth[b] or 0) * 100000 + secs[b]
+        if x == y then return a < b end
+        return x < y
+    end)
+    for _, k in ipairs(order) do
+        local g = groups[k]
+        add("step")
+        goto_(g.place)
+        add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(g.place.n) .. "|r")
+        for _, id in ipairs(g.ids) do
+            add(("    .accept %d >>Accept %s"):format(id, GuideLine(ns.quests[id].name)))
+        end
+    end
+
+    -- the trip
+    if d.entrance then
+        add("step")
+        goto_(d.entrance, 60, "Go to the " .. d.name .. " entrance")
+        local tip = ns.tips and ns.tips[d.key]
+        if tip and tip.entry then add("    >>" .. GuideLine(tip.entry)) end
+    end
+
+    -- inside
+    local inside, objectives = {}, {}
+    for _, id in ipairs(ids) do
+        local q = ns.quests[id]
+        local p = q.start
+        if p and (p.inside or p.k == "item") then
+            tinsert(inside, ("%s (%s)"):format(q.name, p.k == "item" and ("drops from " .. (p.from or "?")) or p.n))
+        end
+        for i = 1, (q.no or 0) do tinsert(objectives, ("    .complete -%d,%d"):format(id, i)) end
+    end
+    if #objectives > 0 or #inside > 0 then
+        add("step")
+        add("    >>Run |cRXP_WARN_" .. GuideLine(d.name) .. "|r and finish these. Skip any you don't have. Open /zd for the deep dive")
+        if #inside > 0 then add("    >>Pick up inside: " .. GuideLine(concat(inside, "; "))) end
+        for _, line in ipairs(objectives) do add(line) end
+    end
+
+    -- hand-ins, one step per NPC
+    local tgroups, torder = {}, {}
+    for _, id in ipairs(ids) do
+        local q = ns.quests[id]
+        local p = q.finish or q.start
+        if p then
+            local k = PlaceKey(p)
+            if not tgroups[k] then tgroups[k] = {place = p, ids = {}} tinsert(torder, k) end
+            tinsert(tgroups[k].ids, id)
+        end
+    end
+    for _, k in ipairs(torder) do
+        local g = tgroups[k]
+        add("step")
+        if not g.place.inside then goto_(g.place) end
+        add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(g.place.n) .. "|r" .. (g.place.inside and " (inside the dungeon)" or ""))
+        for _, id in ipairs(g.ids) do
+            add(("    .turnin -%d >>Turn in %s"):format(id, GuideLine(ns.quests[id].name)))
+        end
+    end
+
+    if #later > 0 then
+        sort(later, function(a, b) return a.level < b.level end)
+        local names = {}
+        for i, e in ipairs(later) do
+            if i <= 5 then tinsert(names, ("%s (level %d)"):format(e.name, e.level)) end
+        end
+        add("step")
+        add("    >>Not yet: " .. GuideLine(concat(names, ", ")) .. (#later > 5 and (", and %d more"):format(#later - 5) or "")
+            .. ". Start this dungeon's guide again from /zd when you get there")
+    end
+    return concat(L, "\n") .. "\n", name, #ids
+end
+
+local function RememberGuide(d, name, text)
+    if not ZDungeonDB then return end
+    ZDungeonDB.zq = ZDungeonDB.zq or {}
+    ZDungeonDB.zq[CharKey()] = {key = d.key, name = name, text = text}
+end
+
+-- Write the guide and load it on ZQuest's card. False when ZQuest can't take it.
+local function StartZQuestGuide(d)
+    local api = ZQuestApi()
+    if not api then return false end
+    local ok, text, name = pcall(BuildGuideText, d)
+    if not ok or not text then return false end
+    if not api.HasGuide(ZQ_GROUP, name) then
+        pcall(api.RegisterGuide, text)
+        if not api.HasGuide(ZQ_GROUP, name) then return false end
+    end
+    local loaded = select(2, pcall(api.LoadGuideByName, ZQ_GROUP, name))
+    if loaded ~= true then return false end
+    RememberGuide(d, name, text)
+    return true
+end
+
+-- What the Dungeons tab does: back to your dungeon guide, or pick a dungeon.
+OpenDungeonTab = function()
+    local api = ZQuestApi()
+    local saved = ZDungeonDB and ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
+    if api and saved and saved.name then
+        if not api.HasGuide(ZQ_GROUP, saved.name) and saved.text then pcall(api.RegisterGuide, saved.text) end
+        if api.HasGuide(ZQ_GROUP, saved.name) and select(2, pcall(api.LoadGuideByName, ZQ_GROUP, saved.name)) == true then
+            return
+        end
+    end
+    OpenNext()
+end
+
 StartPlan = function(d)
     logCache = nil
+    if StartZQuestGuide(d) then
+        -- ZQuest's card has it now: ZDungeon's own card and arrow step aside
+        plan = nil
+        if ZDungeonDB and ZDungeonDB.plans then ZDungeonDB.plans[CharKey()] = nil end
+        UpdateCard()
+        UpdateTracker()
+        Say(d.name .. ": guide loaded on ZQuest's card. Use the Quests and Dungeons tabs above it to switch.")
+        return
+    end
     local ids, chain, seen, order = {}, {}, {}, {}
     for _, id in ipairs(d.quests) do
         local q = ns.quests[id]
@@ -2432,6 +2651,10 @@ local function OnLevelUp(level)
         if i <= 6 then Say("   New quest: " .. name) end
     end
     Say("Type /zd next, or click Where do I go next?, to see your best options.")
+    local last = ZDungeonDB and ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
+    if last and last.key and ZQuestApi() then
+        Say("Your dungeon guide was written for your old level. Click Start guide again to add what just opened up.")
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2463,6 +2686,13 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3, arg4, arg5)
     if event == "ADDON_LOADED" then
         if arg1 == addonName then
             ZDungeonDB = ZDungeonDB or {}
+            -- hand ZQuest the Dungeons tab, and the guide that was up before the reload
+            local zq = _G.RXPGuides
+            if zq then
+                zq.DungeonTab = {group = ZQ_GROUP, Open = function() OpenDungeonTab() end}
+                local last = ZDungeonDB.zq and ZDungeonDB.zq[CharKey()]
+                if last and last.text and zq.RegisterGuide then pcall(zq.RegisterGuide, last.text) end
+            end
             local saved = ZDungeonDB.plans and ZDungeonDB.plans[CharKey()]
             if type(saved) == "table" and saved.key and type(saved.ids) == "table" then
                 saved.chain, saved.order = saved.chain or {}, saved.order or {}

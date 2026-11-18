@@ -208,6 +208,7 @@ ns.tips.EXCAV = {
 }
 
 ns.tips.DALA = {
+    entry = "The sewer gate needs the Dalaran Sewers Key. Horde get it from Magus Wordeen Voidglare's chain in Tarren Mill, which starts at level 30",
     about = "A new Forever dungeon in the Alterac Mountains, entered from the sewers on the city's north-west side. You need the Dalaran Sewers Key: Horde earn it through a chain that starts with Magus Wordeen Voidglare in Tarren Mill, Alliance from a quest at Southshore's town hall. Eight bosses, one of them secret.",
     watch = {
         "Mana Phantoms cast Mana Burn. Interrupt or stun every one, or bring plenty of water.",

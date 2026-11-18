@@ -14,6 +14,15 @@ addon.openxpVersion = OPENXP_VERSION
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.7.4",
+        date = "November 2026",
+        changes = {
+            "Standing next to someone who gives a quest later in the guide? The card now has you pick it up first, then takes you back to the step you were on",
+            "Map pins for steps you've already done out of order are gone",
+            "Fixed: the Find button said Nobody to find here on Talk to steps",
+        },
+    },
+    {
         version = "1.7.3",
         date = "November 2026",
         changes = {

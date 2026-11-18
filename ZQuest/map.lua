@@ -757,7 +757,12 @@ local function generatePins(steps, numPins, startingIndex, isMiniMap)
         while numActivePins < numPins and (startingIndex + i < numSteps) do
             i = i + 1
             local step = steps[startingIndex + i]
-            ProcessMapPin(step)
+            -- ZQuest: a step ahead whose quests you already took or handed
+            -- in (you did it out of order) gets no pin
+            local card = addon.card
+            if not (step and card and card.DoneAhead and card.DoneAhead(step)) then
+                ProcessMapPin(step)
+            end
         end
     end
     addon:ProcessGeneratedSteps(ProcessMapPin,true)

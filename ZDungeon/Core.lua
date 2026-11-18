@@ -2349,75 +2349,156 @@ local function BuildGuideText(d)
         return true
     end
 
-    -- chain quests that are not dungeon quests themselves: take, do, hand in
+    -- Everything to do before the dungeon, as single errands: take a quest,
+    -- go get what it asks for, hand it in. Each knows where it happens and
+    -- what has to come first. They are then put in order by where they are,
+    -- starting from where you stand: always the nearest errand that is
+    -- allowed yet, so everything in one town is done in one visit.
+    local errands, byKey = {}, {}
+    local function errand(kind, id, place, needs)
+        local e = {kind = kind, id = id, place = place, needs = needs or {}}
+        tinsert(errands, e)
+        byKey[kind .. id] = e
+        return e
+    end
+    local function usable(p) return p and p.m and p.x and p.y and not p.inside end
+
     for _, id in ipairs(chain) do
         local q = ns.quests[id]
         if q and not isQuest[id] then
-            add("step")
+            local needs = {}
+            for _, c in ipairs(Chain(id)) do tinsert(needs, "T" .. c) end
             local p = q.start
-            if p and p.k ~= "item" and not p.inside then
-                goto_(p)
-                add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(p.n) .. "|r")
-                if p.k == "npc" then unit_("target", p.n) end
-            elseif p then
-                add("    >>" .. GuideLine(p.k == "item" and ("Loot " .. p.n .. (p.from and (" from " .. p.from) or "")) or ("Find " .. p.n)))
+            errand("A", id, usable(p) and p.k ~= "item" and p or nil, needs)
+            local last = "A" .. id
+            local g
+            for _, x in ipairs(q.goals or {}) do if x.m and x.x and x.y then g = g or x end end
+            if g then
+                errand("G", id, g, {last})
+                last = "G" .. id
             end
-            add(("    .accept %d >>Accept %s"):format(id, GuideLine(q.name)))
-            local sent = goalStep(id, q)
-            add("step")
             local fin = q.finish or q.start
-            if fin and not fin.inside then goto_(fin) end
-            if fin and fin.k == "npc" and not fin.inside then
-                add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(fin.n) .. "|r")
-                unit_("target", fin.n)
-            end
-            if not sent and q.text and q.text ~= "" then add("    >>" .. GuideLine(q.text)) end
-            add(("    .turnin %d >>Turn in %s"):format(id, GuideLine(q.name)))
+            errand("T", id, usable(fin) and fin or nil, {last})
         end
     end
-
-    -- pick-ups outside, one step per quest giver: nearest first, but a quest
-    -- that needs another quest on this list comes after it
-    local groups, order, secs, depth = {}, {}, {}, {}
     for _, id in ipairs(ids) do
         local q = ns.quests[id]
         local p = q.start
         if p and not p.inside and p.k ~= "item" then
-            local k = PlaceKey(p)
-            if not groups[k] then
-                groups[k] = {place = p, ids = {}}
-                tinsert(order, k)
-                secs[k] = (p.m and TravelSecs(p)) or 36000
+            local needs = {}
+            for _, c in ipairs(Chain(id)) do
+                -- a chain quest is handed in first; another dungeon quest only has to be taken first
+                tinsert(needs, (isQuest[c] and "A" or "T") .. c)
             end
-            tinsert(groups[k].ids, id)
-            local n = 0
-            for _, c in ipairs(Chain(id)) do if isQuest[c] then n = n + 1 end end
-            depth[k] = min(depth[k] or 99, n)
-        end
-    end
-    sort(order, function(a, b)
-        local x, y = (depth[a] or 0) * 100000 + secs[a], (depth[b] or 0) * 100000 + secs[b]
-        if x == y then return a < b end
-        return x < y
-    end)
-    for _, k in ipairs(order) do
-        local g = groups[k]
-        add("step")
-        goto_(g.place)
-        add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(g.place.n) .. "|r")
-        if g.place.k == "npc" then unit_("target", g.place.n) end
-        for _, id in ipairs(g.ids) do
-            add(("    .accept %d >>Accept %s"):format(id, GuideLine(ns.quests[id].name)))
+            errand("A", id, usable(p) and p or nil, needs)
+            local gs, g = 0, nil
+            for _, x in ipairs(q.goals or {}) do
+                if x.m and x.x and x.y and not x.both then gs = gs + 1 g = g or x end
+            end
+            if g and gs >= (q.no or 0) then errand("D", id, g, {"A" .. id}) end
         end
     end
 
-    -- dungeon quests whose items or mobs are all outside the instance
-    -- (the cave in front of it, the zone around it): do those on the way
-    local outside = {}
-    for _, id in ipairs(ids) do
-        local q = ns.quests[id]
-        local p = q.start
-        if not (p and (p.inside or p.k == "item")) and goalStep(id, q, true) then outside[id] = true end
+    -- how far apart two places are, in yards, with a charge for changing map
+    local HBD = _G.LibStub and _G.LibStub("HereBeDragons-2.0", true)
+    local function world(p)
+        if p.wx == nil then
+            p.wx = false
+            if HBD and HBD.GetWorldCoordinatesFromZone then
+                local ok, x, y, inst = pcall(HBD.GetWorldCoordinatesFromZone, HBD, p.x / 100, p.y / 100, p.m)
+                if ok and x and y then p.wx, p.wy, p.winst = x, y, inst end
+            end
+        end
+        return p.wx and p or nil
+    end
+    local function cost(from, to)
+        if not to then return 0 end        -- no fixed place: whenever
+        if not from then return 100000 end
+        local a, b = world(from), world(to)
+        local d
+        if a and b then
+            if a.winst ~= b.winst then return 50000 end
+            local dx, dy = a.wx - b.wx, a.wy - b.wy
+            d = (dx * dx + dy * dy) ^ 0.5
+        elseif from.m == to.m then
+            local dx, dy = from.x - to.x, from.y - to.y
+            d = (dx * dx + dy * dy) ^ 0.5 * 40
+        else
+            d = 4000
+        end
+        if from.m ~= to.m then d = d + 500 end
+        return d
+    end
+
+    local here
+    if HBD and HBD.GetPlayerZonePosition then
+        local ok, x, y, m = pcall(HBD.GetPlayerZonePosition, HBD)
+        if ok and x and y and m then here = {m = m, x = x * 100, y = y * 100} end
+    end
+
+    local order, done, left = {}, {}, #errands
+    local rank = {T = 1, A = 2, G = 3, D = 3}
+    while left > 0 do
+        local best, bestCost
+        for _, e in ipairs(errands) do
+            if not e.done then
+                local ok = true
+                for _, n in ipairs(e.needs) do
+                    if byKey[n] and not done[n] then ok = false break end
+                end
+                if ok then
+                    local c = here and cost(here, e.place) or (e.place and 1 or 0)
+                    if not best or c < bestCost - 0.5 or (c < bestCost + 0.5 and
+                        (rank[e.kind] < rank[best.kind] or (rank[e.kind] == rank[best.kind] and e.id < best.id))) then
+                        best, bestCost = e, c
+                    end
+                end
+            end
+        end
+        if not best then
+            -- a loop in the data: take what is left as it comes
+            for _, e in ipairs(errands) do if not e.done then best = e break end end
+        end
+        best.done = true
+        done[best.kind .. best.id] = true
+        left = left - 1
+        tinsert(order, best)
+        if best.place then here = best.place end
+    end
+
+    -- write them out; errands with the same person in a row share a step
+    local outside, sent, talkKey = {}, {}, nil
+    for _, e in ipairs(order) do
+        local q = ns.quests[e.id]
+        if e.kind == "G" then
+            sent[e.id] = goalStep(e.id, q)
+            talkKey = nil
+        elseif e.kind == "D" then
+            if goalStep(e.id, q, true) then outside[e.id] = true end
+            talkKey = nil
+        else
+            local p = e.place
+            local key = p and PlaceKey(p) or nil
+            if not key or key ~= talkKey then
+                add("step")
+                if p then
+                    goto_(p)
+                    add("    >>Talk to |cRXP_FRIENDLY_" .. GuideLine(p.n) .. "|r")
+                    if p.k == "npc" then unit_("target", p.n) end
+                end
+                talkKey = key
+            end
+            if e.kind == "A" then
+                local st = q.start
+                if not p and st then
+                    add("    >>" .. GuideLine(st.k == "item" and ("Loot " .. st.n .. (st.from and (" from " .. st.from) or "")) or ("Find " .. st.n)))
+                end
+                add(("    .accept %d >>Accept %s"):format(e.id, GuideLine(q.name)))
+            else
+                if not sent[e.id] and q.text and q.text ~= "" then add("    >>" .. GuideLine(q.text)) end
+                add(("    .turnin %d >>Turn in %s"):format(e.id, GuideLine(q.name)))
+            end
+        end
     end
 
     -- the trip
@@ -2458,6 +2539,28 @@ local function BuildGuideText(d)
             tinsert(tgroups[k].ids, id)
         end
     end
+    -- nearest first, starting from the dungeon's door; hand-ins inside come first
+    do
+        local from, sorted, used = d.entrance, {}, {}
+        for _, k in ipairs(torder) do
+            if tgroups[k].place.inside then used[k] = true tinsert(sorted, k) end
+        end
+        while #sorted < #torder do
+            local best, bestCost
+            for _, k in ipairs(torder) do
+                if not used[k] then
+                    local p = tgroups[k].place
+                    local c = (p.m and p.x and p.y) and cost(from, p) or 200000
+                    if not best or c < bestCost then best, bestCost = k, c end
+                end
+            end
+            used[best] = true
+            tinsert(sorted, best)
+            local p = tgroups[best].place
+            if p.m and p.x and p.y then from = p end
+        end
+        torder = sorted
+    end
     for _, k in ipairs(torder) do
         local g = tgroups[k]
         add("step")
@@ -2484,7 +2587,7 @@ end
 
 -- Goes up whenever the guide writer changes what a guide says, so a guide
 -- saved by an older version is written again instead of loaded as it was.
-local GUIDE_REV = 2
+local GUIDE_REV = 3
 local staleGuideWasUp = false
 
 local function RememberGuide(d, name, text)

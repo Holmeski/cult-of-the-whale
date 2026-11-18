@@ -2962,6 +2962,18 @@ end
 function card.ReadyHere(step)
     if not step or step.sticky or step.hidewindow or step.completed or step.active then return false end
     local ready = false
+    -- ...or a step that's only picking up quests you can take right now
+    local pickups, turnins = 0, 0
+    for _, e in ipairs(step.elements or {}) do
+        local id = tonumber(e.questId)
+        if e.tag == "turnin" then turnins = turnins + 1 end
+        if e.tag == "accept" and id and id > 0 and not TurnedIn(id) and
+            not (addon.IsOnQuest and addon.IsOnQuest(id)) then
+            if card.QuestBlocked(id) then return false end
+            pickups = pickups + 1
+        end
+    end
+    if turnins == 0 and pickups > 0 and card.HasQuestData() then ready = true end
     for _, e in ipairs(step.elements or {}) do
         local id = tonumber(e.questId)
         if e.tag == "turnin" then
@@ -2980,9 +2992,21 @@ function card.ReadyHere(step)
 end
 
 local function HereDone(step)
+    local turnins = 0
     for _, e in ipairs(step and step.elements or {}) do
         local id = tonumber(e.questId)
+        if e.tag == "turnin" then turnins = turnins + 1 end
         if e.tag == "turnin" and id and id > 0 and not TurnedIn(id) then return false end
+    end
+    if turnins == 0 then
+        -- a pickup step: done once you have its quests
+        for _, e in ipairs(step and step.elements or {}) do
+            local id = tonumber(e.questId)
+            if e.tag == "accept" and id and id > 0 and not TurnedIn(id) and
+                not (addon.IsOnQuest and addon.IsOnQuest(id)) and not card.QuestBlocked(id) then
+                return false
+            end
+        end
     end
     return true
 end
@@ -3428,17 +3452,21 @@ do
             end
         end
         for _, step in ipairs(steps or Steps()) do
+            -- (the engine marks text and target lines as completed from the
+            -- start, so "completed" only counts for real objectives)
             for _, e in ipairs(step.elements or {}) do
-                if not e.completed then
+                local finished = e.completed and not e.textOnly and e.tag ~= nil
+                if not finished then
                     for _, n in ipairs(e.targets or {}) do add(friends, n) end
                     for _, n in ipairs(e.mobs or {}) do add(enemies, n) end
                     for _, n in ipairs(e.unitscan or {}) do add(enemies, n) end
-                    if not place and e.tag == "goto" and e.zone and e.x and e.y then place = e end
                 end
+                if not place and e.tag == "goto" and e.zone and e.x and e.y then place = e end
             end
             -- then the names the text shows in colour
             for _, e in ipairs(step.elements or {}) do
-                if not e.completed then
+                local finished = e.completed and not e.textOnly and e.tag ~= nil
+                if not finished then
                     for _, text in ipairs({e.text, e.rawtext}) do
                         local f, en, p = {}, {}, {}
                         Coloured(text, "RXP_FRIENDLY_", f)
